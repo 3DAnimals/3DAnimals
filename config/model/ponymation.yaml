@@ -1,0 +1,155 @@
+defaults:
+  - dataset: ../../dataset/sequence
+
+name: Ponymation
+dataset: ${dataset}  # inherit overridden dataset config
+
+
+## Optimizer
+cfg_optim_base:
+  lr: 0.0001
+  weight_decay: 0.
+
+cfg_optim_instance:
+  lr: 0.0001
+  weight_decay: 0.
+
+
+## Rendering
+enable_render: true
+cfg_render:
+  spatial_scale: 7
+  background_mode: none  # none (black), white, checkerboard, background, input
+  render_flow: false
+  cam_pos_z_offset: 10
+  fov: 25
+  renderer_spp: 1
+
+
+## Base predictor
+cfg_predictor_base:
+  cfg_shape:
+    grid_res: 256
+    grid_res_coarse_iter_range: [0, 100000]
+    grid_res_coarse: 128
+    spatial_scale: ${...cfg_render.spatial_scale}
+    num_layers: 5
+    hidden_size: 256
+    embedder_freq: 8
+    embed_concat_pts: true
+    init_sdf: ellipsoid
+    jitter_grid: 0.05  # full grid within (-0.5, 0.5)
+    symmetrize: true
+
+  cfg_dino:
+    feature_dim: 16
+    num_layers: 5
+    hidden_size: 256
+    activation: sigmoid
+    embedder_freq: 8
+    embed_concat_pts: true
+    symmetrize: false
+    minmax: [0., 1.]
+
+
+## Instance predictor
+cfg_predictor_instance:
+  spatial_scale: ${..cfg_render.spatial_scale}
+
+  cfg_encoder:
+    cout: 256
+    which_vit: dino_vits8
+    pretrained: true
+    frozen: true
+    final_layer_type: conv
+  
+  cfg_texture:
+    texture_iter_range: [0, inf]
+    cout: 9  # by default, only first three channels are used as albedo RGB
+    num_layers: 8
+    hidden_size: 256
+    activation: sigmoid
+    kd_minmax: [[0., 1.], [0., 1.], [0., 1.]]
+    embed_concat_pts: true
+    embedder_freq: 10
+    symmetrize: true
+
+  cfg_pose:
+    architecture: encoder_dino_patch_key
+    cam_pos_z_offset: ${...cfg_render.cam_pos_z_offset}
+    fov: ${...cfg_render.fov}
+    max_trans_xy_range_ratio: 0.2
+    max_trans_z_range_ratio: 0.5
+    rot_rep: quadlookat  # by default, only quadlookat, octlookat are supported
+    rot_temp_scalar: 1
+    naive_probs_iter: 2000
+    best_pose_start_iter: 6000
+    lookat_zeroy: true
+
+  enable_deform: true
+  cfg_deform:
+    deform_iter_range: [90000, inf]  # deformation disabled initially
+    num_layers: 5
+    hidden_size: 256
+    embed_concat_pts: true
+    embedder_freq: 10
+    symmetrize: true
+    force_avg_deform: true
+  
+  enable_articulation: true
+  cfg_articulation:
+    articulation_iter_range: [10000, inf]  # articulation disabled initially
+    architecture: attention  # 'attention' or 'mlp'
+    num_layers: 4
+    hidden_size: 256
+    embedder_freq: 8
+    bone_feature_mode: sample+global  # 'global', 'sample', 'sample+global'
+    num_body_bones: 8  # assuming an even number of body bones
+    body_bones_mode: z_minmax_y+  # z_minmax, z_minmax_y+ (slightly uplifted along +y)
+    num_legs: 4
+    num_leg_bones: 3
+    attach_legs_to_body_iter_range: [60000, inf]
+    legs_to_body_joint_indices: null  # fix the joint indices of the body bone that the leg bones attach to, eg, [2, 7, 7, 2]. If None, it finds the closest joints automatically.
+    static_root_bones: false
+    skinning_temperature: 0.05  # the smaller, the peakier
+    max_arti_angle: 60
+    constrain_legs: true
+    output_multiplier: 0.1
+
+  enable_lighting: true
+  cfg_light:
+    num_layers: 5
+    hidden_size: 256
+    amb_diff_minmax: [[0.0, 1.0], [0.5, 1.0]]
+
+  enable_motion_vae: true
+  cfg_motion_vae:
+    latent_dim: 256
+
+
+## Losses
+cfg_loss:
+  mask_loss_weight: 10.
+  mask_dt_loss_weight: 0.
+  mask_inv_dt_loss_weight: 100.
+  rgb_loss_weight: 1.
+  dino_feat_im_loss_weight: 10.
+  sdf_reg_decay_start_iter: 10000
+  sdf_bce_reg_loss_weight: 0.
+  sdf_gradient_reg_loss_weight: 0.01
+  logit_loss_weight: 1.
+  logit_loss_dino_feat_im_loss_multiplier: 50.  # increase the importance of dino loss for viewpoint hypothesis selection (directly increasing dino recon loss leads to stripe artifacts)
+  arti_reg_loss_iter_range: [60000, inf]
+  arti_reg_loss_weight: 0.1
+  deform_reg_loss_weight: 10.
+  arti_recon_loss_weight: 5.0
+  kld_loss_weight: 0.001
+
+  # Smooth loss
+  arti_smooth_loss_weight: 0
+  deform_smooth_loss_weight: 0
+  campose_smooth_loss_weight: 0
+  camposevel_smooth_loss_weight: 0
+  artivel_smooth_loss_weight: 0
+  bone_smooth_loss_weight: 0
+  bonevel_smooth_loss_weight: 0

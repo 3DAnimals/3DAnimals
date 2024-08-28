@@ -1,0 +1,38 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base_fauna
+  - dataset: sequence # for visualize purpose
+  - model: fauna
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 1
+  num_frames: 1
+  test_data_dir: data/fauna/Fauna_dataset/large_scale/bear_comb_dinov2_new/test #  change to your image folder with *_rgb.png
+  random_shuffle_samples_train: true
+  load_dino_feature: true
+  dino_feature_dim: 16
+
+
+run_train: false
+run_test: true
+seed: 0
+gpu: 0
+load_optim: false
+checkpoint_dir: results/fauna/pretrained_fauna/
+checkpoint_name: pretrained_fauna.pth
+
+## visualize_result
+output_dir: results/fauna/pretrained_fauna/visualization
+render_modes: [input_view, other_views, rotation]
+finetune_texture: false
+finetune_iters: 10
+finetune_lr: 0.001
+evaluate_keypoint: false

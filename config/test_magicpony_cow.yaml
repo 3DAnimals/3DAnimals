@@ -1,0 +1,34 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base
+  - dataset: image
+  - model: magicpony
+
+
+dataset:
+  batch_size: 10
+  test_data_dir: data/magicpony/cow_coco/test
+  load_dino_feature: true
+  dino_feature_dim: 16
+  num_frames: 1
+
+
+run_train: false
+run_test: true
+checkpoint_dir: results/magicpony/pretrained_cow
+checkpoint_name: pretrained_cow.pth
+
+
+# Visualization
+output_dir: results/magicpony/pretrained_cow/visualization
+resolution: 256
+render_modes: [input_view, other_views, rotation]
+finetune_texture: false
+finetune_iters: 10
+finetune_lr: 0.001
+evaluate_keypoint: false

@@ -1,0 +1,36 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base
+  - dataset: sequence
+  - model: ponymation
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 10
+  num_frames: 1
+  test_data_dir: data/ponymation/cow/test
+  load_dino_feature: true
+  dino_feature_dim: 16
+
+
+run_train: false
+run_test: true
+checkpoint_dir: results/ponymation/pretrained_cow
+checkpoint_name: pretrained_cow_stage2.pth
+
+
+## visualize_result
+output_dir: results/ponymation/pretrained_cow/visualization
+render_modes: [input_view, other_views, rotation]
+finetune_texture: false
+finetune_iters: 10
+finetune_lr: 0.001
+evaluate_keypoint: false
+

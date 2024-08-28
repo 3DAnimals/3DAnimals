@@ -1,0 +1,24 @@
+run_train: true
+run_test: false
+seed: 0
+gpu: 0  # null to use CPU
+num_iters: 1
+train_data_dir: null
+val_data_dir: null
+test_data_dir: null
+
+checkpoint_dir: results
+save_checkpoint_freq: 5000
+keep_num_checkpoint: 2  # -1 for keeping all checkpoints
+archive_code: true
+resume: true
+checkpoint_name: null
+test_result_dir: null
+
+use_logger: true
+log_image_freq: 500
+log_loss_freq: 50
+log_train: true
+log_val: true
+fix_log_batch: false
+save_train_result_freq: 10000

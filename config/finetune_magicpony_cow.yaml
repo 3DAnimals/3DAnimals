@@ -1,0 +1,39 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base
+  - dataset: image
+  - model: magicpony
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 10
+  train_data_dir: data/magicpony/cow_coco/train
+  val_data_dir: data/magicpony/cow_coco/test
+  random_shuffle_samples_train: true
+  load_dino_feature: true
+  dino_feature_dim: 16
+
+
+model:
+  cfg_predictor_instance:
+    cfg_deform:
+      deform_iter_range: [180000, inf]
+
+
+run_train: true
+run_test: false
+seed: 0
+gpu: 0
+num_iters: 200000
+checkpoint_dir: results/magicpony/cow
+checkpoint_path: results/magicpony/pretrained_horse/pretrained_horse.pth  # Start from pretrained MagicPony horse ckpt
+resume: true
+load_optim: false
+logger_type: wandb

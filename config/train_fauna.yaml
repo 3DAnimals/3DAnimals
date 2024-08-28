@@ -1,0 +1,31 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base_fauna
+  - dataset: fauna
+  - model: fauna
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 6
+  train_data_dir: data/Fauna_dataset
+  val_data_dir: data/Fauna_dataset
+  test_data_dir: data/Fauna_dataset
+  random_shuffle_samples_train: false #true
+  load_dino_feature: true
+  dino_feature_dim: 16
+  random_xflip_train: true
+
+
+run_train: true
+run_test: false
+seed: 0
+gpu: 0
+num_iters: 900000
+checkpoint_dir: results/fauna/exp

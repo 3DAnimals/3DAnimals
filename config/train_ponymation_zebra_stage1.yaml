@@ -1,0 +1,46 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base
+  - dataset: sequence
+  - model: ponymation
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 1
+  num_frames: 10
+  train_data_dir: data/ponymation/zebra/train
+  val_data_dir: data/ponymation/zebra/test
+  random_shuffle_samples_train: true
+  load_dino_feature: true
+  dino_feature_dim: 16
+
+
+model:
+  enable_render: true
+  cfg_predictor_base:
+    cfg_shape:
+      grid_res_coarse_iter_range: [0, inf]
+  cfg_predictor_instance:
+    enable_motion_vae: false
+    enable_deform: false
+  cfg_loss:
+    artivel_smooth_loss_weight: 1
+
+
+run_train: true
+run_test: false
+seed: 0
+gpu: 0
+num_iters: 280000
+checkpoint_dir: results/ponymation/zebra
+checkpoint_path: results/magicpony/pretrained_zebra/pretrained_zebra.pth
+resume: true  # Start from a MagicPony ckpt
+load_optim: false
+logger_type: wandb

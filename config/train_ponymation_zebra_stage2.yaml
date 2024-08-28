@@ -1,0 +1,58 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: ${checkpoint_dir}
+
+
+defaults:
+  - base
+  - dataset: sequence
+  - model: ponymation
+
+
+dataset:
+  in_image_size: 256
+  out_image_size: 256
+  batch_size: 10
+  num_frames: 10
+  train_data_dir: data/ponymation/zebra/train
+  val_data_dir: data/ponymation/zebra/test
+  random_shuffle_samples_train: true
+  load_dino_feature: true
+  dino_feature_dim: 16
+
+
+model:
+  enable_render: false
+  cfg_predictor_base:
+    cfg_shape:
+      grid_res_coarse_iter_range: [0, inf]
+  cfg_predictor_instance:
+    enable_motion_vae: true
+    enable_deform: true
+  cfg_loss:  # Turn off all losses except kld and arti_recon
+    mask_loss_weight: 0.
+    mask_dt_loss_weight: 0.
+    mask_inv_dt_loss_weight: 0.
+    rgb_loss_weight: 0.
+    dino_feat_im_loss_weight: 0.
+    logit_loss_weight: 0.
+    sdf_bce_reg_loss_weight: 0.
+    sdf_gradient_reg_loss_weight: 0.
+    arti_reg_loss_weight: 0.
+    deform_reg_loss_weight: 0.
+    artivel_smooth_loss_weight: 0.
+    arti_recon_loss_weight: 100.0
+    kld_loss_weight: 0.001
+
+
+run_train: true
+run_test: false
+seed: 0
+gpu: 0
+num_iters: 500000
+checkpoint_dir: results/ponymation/zebra
+resume: true  # Start from a Ponymation stage 1 ckpt
+load_optim: false
+logger_type: wandb
+mixed_precision: fp16

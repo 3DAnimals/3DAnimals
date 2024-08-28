@@ -1,0 +1,23 @@
+data_type: sequence
+in_image_size: 256
+out_image_size: 256
+batch_size: 10
+num_workers: 4
+train_data_dir: null
+val_data_dir: null
+test_data_dir: null
+random_shuffle_samples_train: false
+random_xflip_train: false
+load_flow: false
+background_mode: none  # none (black), white, checkerboard, background, input
+load_dino_feature: false
+load_dino_cluster: false
+dino_feature_dim: 16
+
+# sequence specific
+skip_beginning: 0
+skip_end: 0
+num_frames: 2
+min_seq_len: 2
+random_sample_frames_train: false
+random_sample_frames_val: false
