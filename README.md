@@ -7,38 +7,8 @@ This is a repository that contains the unified framework of the animal reconstru
 - 3D-Fauna: [project](https://kyleleey.github.io/3DFauna/), [paper](https://arxiv.org/abs/2401.02400)
 - Ponymation: [project](https://keqiangsun.github.io/projects/ponymation/), [paper](https://arxiv.org/abs/2312.13604)
 
-## Setup (with [conda](https://docs.conda.io/en/latest/))
-
-### 1. Install dependencies
-```shell
-conda env create -f environment.yml
-```
-or manually:
-```shell
-conda install -c conda-forge setuptools=59.5.0 numpy=1.23.1 matplotlib=3.5.3 opencv=4.6.0 pyyaml=6.0 tensorboard=2.10.0 trimesh=3.9.35 configargparse=1.5.3 einops=0.4.1 moviepy=1.0.1 ninja=1.10.2 imageio=2.21.1 pyopengl=3.1.6 gdown=4.5.1
-pip install glfw xatlas hydra-core
-```
-
-### 2. Install [PyTorch](https://pytorch.org/)
-```shell
-conda install pytorch==1.10.0 torchvision==0.11.0 torchaudio==0.10.0 cudatoolkit=11.3 -c pytorch -c conda-forge
-```
-*Note*: The code is tested with PyTorch 1.10.0 and CUDA 11.3.
-
-### 3. Install [NVDiffRec](https://github.com/NVlabs/nvdiffrec) dependencies
-```
-pip install git+https://github.com/NVlabs/nvdiffrast/
-pip install --global-option="--no-networks" git+https://github.com/NVlabs/tiny-cuda-nn@v1.6#subdirectory=bindings/torch
-imageio_download_bin freeimage
-```
-*Note*: The code is tested with tinycudann=1.6 and it requires GCC/G++ > 7.5 (conda's gxx also works: `conda install -c conda-forge gxx_linux-64=9.4.0`).
-
-### 4. Install [PyTorch3D](https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md) (for visulaization)
-```
-conda install -c fvcore -c iopath -c conda-forge fvcore iopath
-conda install -c bottler nvidiacub
-conda install pytorch3d -c pytorch3d
-```
+## Installation
+See [INSTALL.md](./INSTALL.md).
 
 ## Data
 The preprocessed datasets for each model and the tetrahedral grids files can be downloaded using the scripts in `data/`:
@@ -188,27 +158,27 @@ For more precise texture optimization, provide instance masks in the same folder
 If you use this repository or find the papers useful for your research, please consider citing:
 ```
 @InProceedings{wu2023magicpony,
-  author    = {Shangzhe Wu and Ruining Li and Tomas Jakab and Christian Rupprecht and Andrea Vedaldi},
   title     = {{MagicPony}: Learning Articulated 3D Animals in the Wild},
+  author    = {Wu, Shangzhe and Li, Ruining and Jakab, Tomas and Rupprecht, Christian and Vedaldi, Andrea},
   booktitle = {CVPR},
   year      = {2023}
 }
 ```
 
 ```
-@InProceedings{Li_2024_CVPR,
-    author    = {Li, Zizhang and Litvak, Dor and Li, Ruining and Zhang, Yunzhi and Jakab, Tomas and Rupprecht, Christian and Wu, Shangzhe and Vedaldi, Andrea and Wu, Jiajun},
-    title     = {Learning the 3D Fauna of the Web},
-    booktitle = {CVPR},
-    year      = {2024}
+@InProceedings{li2024fauna,
+  title     = {Learning the 3D Fauna of the Web},
+  author    = {Li, Zizhang and Litvak, Dor and Li, Ruining and Zhang, Yunzhi and Jakab, Tomas and Rupprecht, Christian and Wu, Shangzhe and Vedaldi, Andrea and Wu, Jiajun},
+  booktitle = {CVPR},
+  year      = {2024}
 }
 ```
 
 ```
-@Article{sun2024ponymation,
+@InProceedings{sun2024ponymation,
   title     = {{Ponymation}: Learning Articulated 3D Animal Motions from Unlabeled Online Videos},
   author    = {Sun, Keqiang and Litvak, Dor and Zhang, Yunzhi and Li, Hongsheng and Wu, Jiajun and Wu, Shangzhe},
-  journal   = {ECCV},
+  booktitle = {ECCV},
   year      = {2024}
 }
 ```
