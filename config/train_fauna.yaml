@@ -14,10 +14,10 @@ dataset:
   in_image_size: 256
   out_image_size: 256
   batch_size: 6
-  train_data_dir: data/Fauna_dataset
-  val_data_dir: data/Fauna_dataset
-  test_data_dir: data/Fauna_dataset
-  random_shuffle_samples_train: false #true
+  train_data_dir: data/fauna/Fauna_dataset
+  val_data_dir: data/fauna/Fauna_dataset
+  test_data_dir: data/fauna/Fauna_dataset
+  random_shuffle_samples_train: false
   load_dino_feature: true
   dino_feature_dim: 16
   random_xflip_train: true

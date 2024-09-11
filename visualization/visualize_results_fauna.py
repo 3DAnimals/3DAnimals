@@ -94,17 +94,19 @@ def main(cfg):
     resolution = cfg.model.cfg_predictor_base.cfg_shape.grid_res
     resolution = (resolution, resolution)
     render_modes = cfg.render_modes
-    try:
+    if getattr(cfg, "checkpoint_path", None) is not None:
         checkpoint_path = cfg.checkpoint_path
-    except:
+    elif getattr(cfg, "checkpoint_dir", None) is not None and getattr(cfg, "checkpoint_name", None) is not None:
+        checkpoint_path = os.path.join(cfg.checkpoint_dir, cfg.checkpoint_name)
+    else:
         checkpoints = sorted(
             glob.glob(osp.join(cfg.checkpoint_dir, '*.pth')),
             key=lambda x: int(''.join([c for c in osp.basename(x) if c.isdigit()]))
         )
         checkpoint_path = checkpoints[-1]
-    try:
+    if getattr(cfg, "output_dir") is not None:
         output_dir = cfg.output_dir
-    except:
+    else:
         output_dir = cfg.checkpoint_dir
     os.makedirs(output_dir, exist_ok=True)
 
