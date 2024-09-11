@@ -1,7 +1,7 @@
 # 3D Animals Codebase
 
 
-https://github.com/user-attachments/assets/34423c15-8e80-46dd-a2b3-2b437e87749a
+https://github.com/user-attachments/assets/c0dbb792-2ce8-424c-98db-8c8e6a3e2f29
 
 
 This repository contains the unified codebase for several projects on articulated 3D animal reconstruction and motion generation, including:
