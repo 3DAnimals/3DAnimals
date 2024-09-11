@@ -1,5 +1,9 @@
 # 3D Animals Codebase
 
+
+https://github.com/user-attachments/assets/34423c15-8e80-46dd-a2b3-2b437e87749a
+
+
 This repository contains the unified codebase for several projects on articulated 3D animal reconstruction and motion generation, including:
 
 - [MagicPony: Learning Articulated 3D Animals in the Wild](https://3dmagicpony.github.io/) (CVPR 2023) [![arXiv](https://img.shields.io/badge/arXiv-2211.12497-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2211.12497) - a category-specific single-image 3D animal reconstruction model
