@@ -1,0 +1,2 @@
+echo "----------------------- downloading pretrained 3D-Fauna model -----------------------"
+wget https://download.cs.stanford.edu/viscam/3DAnimals/models/fauna/pretrained_fauna.zip && unzip -q pretrained_fauna.zip

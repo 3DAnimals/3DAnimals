@@ -1,9 +1,9 @@
 __pycache__
-data/
+data/*
 !data/**/*.sh
 !data/**/*.py
 !data/**/*.md
-results/
+results/*
 !results/**/*.sh
 outputs
 *.zip
