@@ -25,7 +25,7 @@ sh download_tets.sh
 ```
 
 ### Datasets
-Download the preprocessed datasets for each project using the download scripts provided in `data/`, for example:
+Download the preprocessed datasets for each project using the download scripts provided in `data/`. All datasets should be downloaded in the same directory as the download script, for example:
 ```shell
 cd data/magicpony
 sh download_horse_combined.sh
@@ -34,7 +34,7 @@ See the notes [below](#data-1) for the details of each dataset.
 
 
 ## Pretrained Models
-The pretrained models can be downloaded using the scripts provided in `results/`, for example:
+The pretrained models can be downloaded using the scripts provided in `results/`. All pretrained models should be downloaded in the same directory as the download script, for example:
 ```shell
 cd results/magicpony
 sh download_pretrained_horse.sh
