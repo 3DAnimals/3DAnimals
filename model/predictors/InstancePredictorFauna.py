@@ -43,8 +43,8 @@ class InstancePredictorFauna(InstancePredictorBase):
         rots_logits = rots_pred[..., 0]  # Nx4
         rots_pred = rots_pred[..., 1:4]
         trans_pred = poses_raw[..., -3:]
-        temp = 1 / np.clip(total_iter / 1000 / rot_temp_scalar, 1., 100.)
-        # temp = 1 / np.clip(total_iter / 1000 / rot_temp_scalar, 1, 10.)
+        # temp = 1 / np.clip(total_iter / 1000 / rot_temp_scalar, 1., 100.)
+        temp = 1 / np.clip(total_iter / 1000 / rot_temp_scalar, 1, 10.)
 
         rots_probs = torch.nn.functional.softmax(-rots_logits / temp, dim=1)  # NxK
         naive_probs = torch.ones(num_hypos).to(rots_logits.device)
