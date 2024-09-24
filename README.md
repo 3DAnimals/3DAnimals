@@ -120,7 +120,7 @@ python run.py --config-name train_fauna
 [Ponymation](https://keqiangsun.github.io/projects/ponymation/) learns a generative model of articulated 3D motions of an animal species.
 
 ### Data
-To be updated shortly.
+Dataset can be downloaded via the script `data/ponymation/download_ponymation_dataset.sh`, including video data of horse, cow, giraffe, and zebra.
 
 ### Training
 Ponymation is trained in two stages. In the first stage, we pretrain a 3D reconstruction model that takes in a sequence of frames and reconstructs a sequence of articulated 3D shapes of the animal. This stage can be initiated using the stage 1 config `train_ponymation_horse_stage1`:
