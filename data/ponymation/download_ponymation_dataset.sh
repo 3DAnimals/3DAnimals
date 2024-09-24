@@ -3,6 +3,11 @@ wget https://download.cs.stanford.edu/viscam/3DAnimals/data/ponymation/horse.zip
 echo "----------------------- unzipping horse dataset -----------------------"
 unzip -q horse.zip
 
+echo "----------------------- downloading horse stage2 dataset -----------------------"
+wget https://download.cs.stanford.edu/viscam/3DAnimals/data/ponymation/horse_stage2.tgz
+echo "----------------------- unzipping horse stage 2 dataset -----------------------"
+tar -xf horse_stage2.tgz
+
 echo "----------------------- downloading cow dataset -----------------------"
 wget https://download.cs.stanford.edu/viscam/3DAnimals/data/ponymation/cow.zip
 echo "----------------------- unzipping cow dataset -----------------------"
@@ -17,8 +22,3 @@ echo "----------------------- downloading giraffe dataset ----------------------
 wget https://download.cs.stanford.edu/viscam/3DAnimals/data/ponymation/giraffe.zip
 echo "----------------------- unzipping giraffe dataset -----------------------"
 unzip -q giraffe.zip
-
-echo "----------------------- downloading horse stage2 dataset -----------------------"
-wget https://download.cs.stanford.edu/viscam/3DAnimals/data/ponymation/horse_stage2.tgz
-echo "----------------------- unzipping horse stage 2 dataset -----------------------"
-tar -xvf horse_stage2.tgz
