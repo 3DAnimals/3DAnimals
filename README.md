@@ -7,7 +7,7 @@ https://github.com/user-attachments/assets/c0dbb792-2ce8-424c-98db-8c8e6a3e2f29
 This repository contains the unified codebase for several projects on articulated 3D animal reconstruction and motion generation, including:
 
 - [MagicPony: Learning Articulated 3D Animals in the Wild](https://3dmagicpony.github.io/) (CVPR 2023) [![arXiv](https://img.shields.io/badge/arXiv-2211.12497-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2211.12497) - a category-specific single-image 3D animal reconstruction model
-- [Learning the 3D Fauna of the Web](https://kyleleey.github.io/3DFauna/) (CVPR 2024) [![arXiv](https://img.shields.io/badge/arXiv-2401.02400-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2401.02400) - a pan-category single-image 3D animal reconstruction model
+- [Learning the 3D Fauna of the Web](https://kyleleey.github.io/3DFauna/) (CVPR 2024) [![arXiv](https://img.shields.io/badge/arXiv-2401.02400-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2401.02400) - a pan-category single-image 3D quadruped reconstruction model
 - [Ponymation: Learning Articulated 3D Animal Motions from Unlabeled Online Videos](https://keqiangsun.github.io/projects/ponymation/) (ECCV 2024) [![arXiv](https://img.shields.io/badge/arXiv-2312.13604-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2312.13604) - an articulated 3D animal motion generative model
 
 
@@ -56,7 +56,7 @@ Note that only the RGB images are required during testing. The DINO features are
 When running the command with the default test configs, it will automatically save some basic visualizations, including the reconstructed views and 3D meshes. For more advanced and customized visualizations, use `scripts/visualize_results.py` as explained [below](#visualization).
 
 ### Training
-See the instructions for each specific model [below](#magicpony-arxiv).
+See the instructions for each specific model [below](#training-1).
 
 ### Visualization
 We provide some scripts that we used to generate the visualizations on our project pages ([MagicPony](https://3dmagicpony.github.io/), [3D-Fauna](https://kyleleey.github.io/3DFauna/), [Ponymation](https://keqiangsun.github.io/projects/ponymation/)). To render such visualizations, simply run the following command with the proper test config, e.g.:
