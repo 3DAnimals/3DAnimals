@@ -32,6 +32,8 @@ class RenderConfig:
     cam_pos_z_offset: float = 10.0
     fov: float = 25.
     renderer_spp: int = 1
+    offset_extra: float = 0.0
+    render_default: bool = False
 
 
 @dataclass
@@ -368,10 +370,16 @@ class AnimalModel:
                         prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
                     )
             else:
-                renders = self.render(
-                    render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light,
-                    prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
-                )
+                if self.cfg_render.render_default:
+                    renders = self.render(
+                        render_modes, shape, texture, self.default_mvp, self.default_w2c, self.default_campos, (h, w), im_features=im_features, light=light,
+                        prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
+                    )
+                else:
+                    renders = self.render(
+                        render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light,
+                        prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
+                    )
             if batch_size * num_frames != renders[0].shape[0]:
                 batch_size = int(renders[0].shape[0]/num_frames)
             renders = map(lambda x: expandBF(x, batch_size, num_frames), renders)

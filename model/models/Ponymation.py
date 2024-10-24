@@ -1,7 +1,9 @@
 import torch
+import numpy as np
 from einops import repeat
 from dataclasses import dataclass
 from .AnimalModel import AnimalModel, AnimalModelConfig
+from ..geometry.skinning import euler_angles_to_matrix
 from ..utils import misc
 from ..predictors import (
     BasePredictorBase, InstancePredictorMotionVAE, BasePredictorConfig, InstancePredictorMotionVAEConfig
@@ -20,6 +22,19 @@ class Ponymation(AnimalModel):
         self.netBase = BasePredictorBase(self.cfg_predictor_base)
         self.netInstance = InstancePredictorMotionVAE(self.cfg_predictor_instance)
         self.arti_recon_loss_fn = torch.nn.MSELoss()
+        self.get_default_pose()
+
+    def get_default_pose(self):
+        
+        pose_canon = torch.concat([torch.eye(3), torch.zeros(1, 3)], dim=0).view(-1)[None].to(self.device)
+        mvp_canon, w2c_canon, campos_canon = self.netInstance.get_camera_extrinsics_from_pose(pose_canon, offset_extra=self.cfg_render.offset_extra)
+        viewpoint_arti = torch.FloatTensor([0, -120, 0]) / 180 * np.pi
+        mtx = torch.eye(4).to(self.device)
+        mtx[:3, :3] = euler_angles_to_matrix(viewpoint_arti, "XYZ")
+        w2c_arti = torch.matmul(w2c_canon, mtx[None])
+        mvp_arti = torch.matmul(mvp_canon, mtx[None])
+        campos_arti = campos_canon @ torch.linalg.inv(mtx[:3, :3]).T
+        self.default_pose, self.default_mvp, self.default_w2c, self.default_campos = pose_canon, mvp_arti, w2c_arti, campos_arti
 
     def set_eval(self):
         super().set_eval()

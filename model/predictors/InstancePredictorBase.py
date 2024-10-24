@@ -307,7 +307,8 @@ class InstancePredictorBase(nn.Module):
             bones = estimate_bones(
                 verts.detach(), n_body_bones=self.cfg_articulation.num_body_bones,
                 n_legs=self.cfg_articulation.num_legs, n_leg_bones=self.cfg_articulation.num_leg_bones,
-                body_bones_mode=self.cfg_articulation.body_bones_mode, compute_kinematic_chain=False, aux=self.bone_aux
+                body_bones_mode=self.cfg_articulation.body_bones_mode, compute_kinematic_chain=False, aux=self.bone_aux,
+                legs_to_body_joint_indices=self.cfg_articulation.legs_to_body_joint_indices
             )
 
         ## 2D location of bone mid point
@@ -376,7 +377,35 @@ class InstancePredictorBase(nn.Module):
             tmp_mask[:, :, leg_bones_idx, 1] = 1  # side bending / rotation around y axis
             articulation_angles = tmp_mask * (articulation_angles * 0.3) \
                 + (1 - tmp_mask) * articulation_angles  # limit to (-0.3, 0.3)
-        articulation_angles = articulation_angles * self.cfg_articulation.max_arti_angle / 180 * np.pi
+    
+        if hasattr(self.cfg_articulation, "extra_constraints") and self.cfg_articulation.extra_constraints:
+
+            leg_bones_posx = [self.cfg_articulation.num_body_bones + i for i in range(self.cfg_articulation.num_leg_bones * self.cfg_articulation.num_legs // 2)]
+            leg_bones_negx = [self.cfg_articulation.num_body_bones + self.cfg_articulation.num_leg_bones * self.cfg_articulation.num_legs // 2 + i for i in range(self.cfg_articulation.num_leg_bones * self.cfg_articulation.num_legs // 2)]
+
+            tmp_mask = torch.zeros_like(articulation_angles)
+            tmp_mask[:, :, leg_bones_posx + leg_bones_negx, 2] = 1
+            articulation_angles = tmp_mask * (articulation_angles * 0.3) + (1 - tmp_mask) * articulation_angles  # no twist
+
+            tmp_mask = torch.zeros_like(articulation_angles)
+            tmp_mask[:, :, leg_bones_posx + leg_bones_negx, 1] = 1
+            articulation_angles = tmp_mask * (articulation_angles * 0.3) + (1 - tmp_mask) * articulation_angles  # (-0.4, 0.4),  limit side bending
+            print("constrain legs: Done!")
+
+            leg_bones_top = [8, 11, 14, 17]
+            tmp_mask = torch.zeros_like(articulation_angles)
+            tmp_mask[:, :, leg_bones_top, 1] = 1
+            tmp_mask[:, :, leg_bones_top, 2] = 1
+            articulation_angles = tmp_mask * (articulation_angles * 0.05) + (1 - tmp_mask) * articulation_angles
+
+            leg_bones_bottom = [9, 10, 12, 13, 15, 16, 18, 19]
+            tmp_mask = torch.ones_like(articulation_angles)
+            tmp_mask[:, :, leg_bones_bottom, 1] = 0
+            tmp_mask[:, :, leg_bones_bottom, 2] = 0
+            articulation_angles = tmp_mask * articulation_angles
+            print("constrain legs: Done!")
+
+            articulation_angles = articulation_angles * self.cfg_articulation.max_arti_angle / 180 * np.pi
         return articulation_angles
 
     def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter):
