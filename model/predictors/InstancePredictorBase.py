@@ -405,7 +405,7 @@ class InstancePredictorBase(nn.Module):
             articulation_angles = tmp_mask * articulation_angles
             print("constrain legs: Done!")
 
-            articulation_angles = articulation_angles * self.cfg_articulation.max_arti_angle / 180 * np.pi
+        articulation_angles = articulation_angles * self.cfg_articulation.max_arti_angle / 180 * np.pi
         return articulation_angles
 
     def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter):
