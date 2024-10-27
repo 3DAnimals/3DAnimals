@@ -55,6 +55,8 @@ class PoseConfig:
     rot_temp_scalar: float = 1.
     naive_probs_iter: int = 2000
     best_pose_start_iter: int = 6000
+    
+    rand_campos: bool = False
 
 
 @dataclass
@@ -507,7 +509,7 @@ class InstancePredictorBase(nn.Module):
         pose_raw, pose, multi_hypothesis_aux = self.sample_pose_hypothesis_from_quad_predictions(
             poses_raw, total_iter, rot_temp_scalar=self.cfg_pose.rot_temp_scalar, num_hypos=self.num_pose_hypos,
             naive_probs_iter=self.cfg_pose.naive_probs_iter, best_pose_start_iter=self.cfg_pose.best_pose_start_iter,
-            random_sample=(is_training and not (hasattr(self, "cfg_motion_vae") and self.enable_motion_vae))
+            random_sample=(is_training and self.cfg_pose.rand_campos)
         )
         mvp, w2c, campos = self.get_camera_extrinsics_from_pose(pose)
 

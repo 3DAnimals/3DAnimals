@@ -13,8 +13,8 @@ defaults:
 dataset:
   in_image_size: 256
   out_image_size: 256
-  batch_size: 1
-  num_frames: 10
+  batch_size: 4
+  num_frames: 5
   train_data_dir: data/ponymation/horse/train
   val_data_dir: data/ponymation/horse/test
   random_shuffle_samples_train: true
@@ -24,15 +24,20 @@ dataset:
 
 model:
   enable_render: true
+  cfg_render:
+    render_default: false
+    renderer_spp: 4
   cfg_predictor_base:
     cfg_shape:
-      grid_res_coarse_iter_range: [0, inf]
+      grid_res_coarse_iter_range: [0, 140000]
   cfg_predictor_instance:
     enable_motion_vae: false
-    enable_deform: false
+    enable_deform: true
+    cfg_articulation:
+      extra_constraints: false
   cfg_loss:
     artivel_smooth_loss_weight: 1
-
+    campose_smooth_loss_weight: 1
 
 run_train: true
 run_test: false
@@ -43,5 +48,5 @@ checkpoint_dir: results/ponymation/horse
 checkpoint_path: results/magicpony/pretrained_horse/pretrained_horse.pth
 resume: true  # Start from a MagicPony ckpt
 load_optim: false
-logger_type: wandb
-mixed_precision: fp16
+logger_type: tensorboard
+mixed_precision: false
