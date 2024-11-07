@@ -32,7 +32,7 @@ conda install pytorch3d -c pytorch3d
 ```
 
 ### 5. Install [Weights & Biases](https://wandb.ai/site) (for logging)
-If you want to use Weights & Biases for looging, please install wandb manually:
+If you want to use Weights & Biases for logging, please install wandb manually:
 ```shell
 conda install wandb
 ```
