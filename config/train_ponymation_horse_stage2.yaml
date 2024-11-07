@@ -16,7 +16,7 @@ dataset:
   batch_size: 20
   random_xflip_train: true
   num_frames: 10
-  train_data_dir: data/ponymation/combine_wo_img/vae_train_data
+  train_data_dir: data/ponymation/horse_stage2
   val_data_dir: data/ponymation/horse/test
   random_shuffle_samples_train: true
   load_dino_feature: true
