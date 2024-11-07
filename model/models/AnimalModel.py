@@ -32,6 +32,8 @@ class RenderConfig:
     cam_pos_z_offset: float = 10.0
     fov: float = 25.
     renderer_spp: int = 1
+    offset_extra: float = 0.0
+    render_default: bool = False
 
 
 @dataclass
@@ -361,15 +363,16 @@ class AnimalModel:
             render_modes = ['shaded', 'dino_pred']
             if render_flow:
                 render_modes += ['flow']
+            render_mvp, render_w2c, render_campos = (mvp, w2c, campos) if not self.cfg_render.render_default else (self.default_mvp.to(self.device), self.default_w2c.to(self.device), self.default_campos.to(self.device))
             if self.mixed_precision:
                 with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
                     renders = self.render(
-                        render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light,
+                        render_modes, shape, texture, render_mvp, render_w2c, render_campos, (h, w), im_features=im_features, light=light,
                         prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
                     )
             else:
                 renders = self.render(
-                    render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light,
+                    render_modes, shape, texture, render_mvp, render_w2c, render_campos, (h, w), im_features=im_features, light=light,
                     prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
                 )
             if batch_size * num_frames != renders[0].shape[0]:
