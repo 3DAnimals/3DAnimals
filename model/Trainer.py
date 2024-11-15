@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 from tqdm import tqdm
 from math import ceil
+from accelerate import Accelerator
 from .utils import meters, misc
 from .dataloaders import DataLoaderConfig, get_data_loaders
 from .models import AnimalModelConfig
@@ -51,7 +52,7 @@ class TrainerConfig:
 class Trainer:
     def __init__(self, cfg: TrainerConfig, model):
         self.cfg = misc.load_cfg(self, cfg, TrainerConfig)
-        self.device = misc.setup_runtime(self.cfg)
+        misc.setup_runtime(self.cfg)
 
         if self.cfg.remake_dataloader_iter > 0:
             self.train_loader, self.val_loader, self.test_loader = get_data_loaders(self.cfg.dataset, self.cfg.remake_dataloader_num)
@@ -64,7 +65,9 @@ class Trainer:
         self.train_result_dir = osp.join(self.checkpoint_dir, 'training_results')
         self.model = model
         self.model.trainer = self
-        
+        self.accelerator = Accelerator()
+        self.model.accelerator = self.accelerator
+
         # TODO: use config to define this
         if hasattr(self.model, "all_category_names"):
             self.model.all_category_names = self.train_loader.dataset.all_category_names
@@ -94,12 +97,6 @@ class Trainer:
         if self.load_optim:
             self.model.load_optimizer_state(cp)
         self.metrics_trace = cp.get('metrics_trace', self.metrics_trace)
-        # torch.backends.cudnn.deterministic = True
-        # torch.backends.cudnn.benchmark = False
-        # torch.manual_seed(0)
-        # for p in self.model.netInstance.netVAE.parameters():
-        #     w = torch.randn(*p.shape)
-        #     p.data.copy_(w)
         if self.reset_epoch:
             return 0, 0
         else:
@@ -130,7 +127,7 @@ class Trainer:
     def test(self):
         """Perform testing."""
         assert self.test_loader is not None, "test_data_dir must be specified for testing"
-        self.model.to(self.device)
+        self.model.to(self.accelerator.device)
         self.model.set_eval()
         self.load_optim = False
         epoch, self.total_iter = self.load_checkpoint()
@@ -141,7 +138,7 @@ class Trainer:
 
         with torch.no_grad():
             for iteration, batch in tqdm(enumerate(self.test_loader), total=len(self.test_loader)):
-                batch = validate_all_to_device(batch, self.device)
+                batch = validate_all_to_device(batch)
                 m = self.model.forward(batch, epoch=epoch, total_iter=self.total_iter, save_results=True, save_dir=self.test_result_dir, is_training=False)
                 print(f"T{self.total_iter:06}")
 
@@ -150,23 +147,34 @@ class Trainer:
         assert self.train_loader is not None, "train_data_dir must be specified for training"
 
         # archive code and configs
-        if self.archive_code:
+        if self.accelerator.is_main_process and self.archive_code:
             misc.archive_code(osp.join(self.checkpoint_dir, 'archived_code.zip'), filetypes=['.py'])
 
         # initialize
         start_epoch = 0
         self.total_iter = 0
         self.metrics_trace.reset()
-        self.model.to(self.device)
         self.model.reset_optimizers()
         self.model.set_train()
 
         # resume from checkpoint
-        if self.resume:
+        if self.accelerator.is_main_process and self.resume:
             start_epoch, self.total_iter = self.load_checkpoint()
 
-        # initialize tensorboard logger
-        if self.use_logger:
+        # setup distributed training
+        self.train_loader = self.accelerator.prepare_data_loader(self.train_loader)
+        if self.val_loader is not None:
+            self.val_loader = self.accelerator.prepare_data_loader(self.val_loader)
+        for name, value in vars(self.model).items():
+            if isinstance(value, torch.nn.Module):
+                setattr(self.model, name, self.accelerator.prepare_model(value))
+            if isinstance(value, torch.optim.Optimizer):
+                setattr(self.model, name, self.accelerator.prepare_optimizer(value))
+            if isinstance(value, torch.optim.lr_scheduler._LRScheduler):
+                setattr(self.model, name, self.accelerator.prepare_scheduler(value))
+
+        # initialize logger
+        if self.accelerator.is_main_process and self.use_logger:
             if self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
                 self.logger = SummaryWriter(osp.join(self.checkpoint_dir, 'tensorboard_logs', datetime.now().strftime("%Y%m%d-%H%M%S")), flush_secs=10)
@@ -178,11 +186,14 @@ class Trainer:
                 )
             else:
                 raise NotImplementedError(f"Unsupported loger: {self.logger}")
-            if self.log_val:
-                assert self.val_loader is not None, "val_data_dir must be specified for logging validation"
-                self.val_data_iterator = indefinite_generator(self.val_loader)
-            if self.fix_log_batch:
-                self.log_batch = next(self.val_data_iterator)
+        else:
+            self.logger = None
+
+        if self.log_val:
+            assert self.val_loader is not None, "val_data_dir must be specified for logging validation"
+            self.val_data_iterator = indefinite_generator(self.val_loader)
+        if self.fix_log_batch:
+            self.log_batch = next(self.val_data_iterator)
 
         # setup mixed_precision
         if self.mixed_precision:
@@ -193,7 +204,7 @@ class Trainer:
             else:
                 raise NotImplementedError(f"Unsupported mixed precision: {self.mixed_precision}")
             # torch.cpu.amp.GradScaler() or torch.GradScaler() need latest version of pytorch
-            self.model.scaler = torch.cuda.amp.GradScaler() if "cuda" in self.device else None
+            self.model.scaler = torch.cuda.amp.GradScaler() if "cuda" in self.accelerator.device else None
         else:
             self.model.mixed_precision = None
 
@@ -206,7 +217,7 @@ class Trainer:
             self.metrics_trace.append("train", metrics)
             self.metrics_trace.save(osp.join(self.checkpoint_dir, 'metrics.json'))
         print(f"Training completed for all {self.total_iter} iterations.")
-        if self.use_logger and self.logger_type == "wandb":
+        if self.use_logger and self.logger is not None and self.logger_type == "wandb":
             self.logger.finish()
 
     def run_train_epoch(self, epoch):
@@ -221,7 +232,7 @@ class Trainer:
                         self.model.all_category_names = self.train_loader.dataset.all_category_names
                         self.remake_dataloader = True
 
-            batch = validate_all_to_device(batch, self.device)
+            batch = validate_all_to_device(batch)
             m = self.model.forward(batch, epoch=epoch, total_iter=self.total_iter, is_training=True)
             self.model.backward()
 
@@ -240,13 +251,14 @@ class Trainer:
             else:
                 discriminator_loss_dict = None
 
-            num_seqs, num_frames = batch[0].shape[:2]
-            total_im_num = num_seqs*num_frames
-            metrics.update(m, total_im_num)
-            print(f"T{self.total_iter:06}/{metrics}")
+            if self.accelerator.is_main_process:
+                num_seqs, num_frames = batch[0].shape[:2]
+                total_im_num = num_seqs*num_frames
+                metrics.update(m, total_im_num)
+                print(f"T{self.total_iter:06}/{metrics}")
 
             if self.use_logger:
-                if self.total_iter % self.log_loss_freq == 0:
+                if self.accelerator.is_main_process and self.total_iter % self.log_loss_freq == 0:
                     self.logger.add_scalar(f"epoch", epoch, self.total_iter)
                     for name, loss in m.items():
                         self.logger.add_scalar(f'train_loss/{name}', loss, self.total_iter)
@@ -263,25 +275,28 @@ class Trainer:
                         torch.cuda.empty_cache()
 
                 if self.total_iter % self.log_image_freq == 0:
-                    with torch.no_grad():
-                        if self.log_train:
+                    if self.log_train:
+                        with torch.no_grad():
                             m = self.model.forward(batch, epoch=epoch, logger=self.logger, total_iter=self.total_iter, logger_prefix='train_', is_training=True)
-
-                        if self.log_val:
-                            if self.fix_log_batch:
-                                batch = self.log_batch
-                            else:
-                                batch = next(self.val_data_iterator)
-                            batch = validate_all_to_device(batch, self.device)
-                            self.model.set_eval()
+                    if self.log_val:
+                        if self.fix_log_batch:
+                            batch = self.log_batch
+                        else:
+                            batch = next(self.val_data_iterator)
+                        batch = validate_all_to_device(batch)
+                        self.model.set_eval()
+                        with torch.no_grad():
                             m = self.model.forward(batch, epoch=epoch, logger=self.logger, total_iter=self.total_iter, logger_prefix='val_', is_training=False)
-                            self.model.set_train()
+                        self.model.set_train()
+                        if self.logger is not None:
                             for name, loss in m.items():
                                 self.logger.add_scalar(f'val_loss/{name}', loss, self.total_iter)
-                    torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
+            self.accelerator.wait_for_everyone()
             self.model.scheduler_step()
-            if self.total_iter % self.save_checkpoint_freq == 0:
+            if self.accelerator.is_main_process and self.total_iter % self.save_checkpoint_freq == 0:
                 self.save_checkpoint(epoch+1, total_iter=self.total_iter, save_optim=True)
+            self.accelerator.wait_for_everyone()
             if self.total_iter >= self.num_iters:
                 break
         return metrics
@@ -294,11 +309,13 @@ def indefinite_generator(loader):
             yield x
 
 
-def validate_tensor_to_device(x, device):
+def validate_tensor_to_device(x, device=None):
     if torch.any(torch.isnan(x)):
         return None
+    elif device is None:
+        return x
     else:
         return x.to(device)
 
-def validate_all_to_device(batch, device):
+def validate_all_to_device(batch, device=None):
     return tuple(validate_tensor_to_device(x, device) for x in batch)

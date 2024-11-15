@@ -485,11 +485,17 @@ class InstancePredictorBase(nn.Module):
         deformation = None
         if self.enable_deform and in_range(total_iter, self.cfg_deform.deform_iter_range):
             shape, deformation = self.forward_deformation(shape, feat_key, batch_size=batch_size, num_frames=num_frames)
-        
+        else:  # Dummy operations for accelerator ddp
+            shape.v_pos += sum([p.sum() * 0 for p in self.netDeform.parameters()])
+            shape.v_pos += sum([p.sum() * 0 for p in self.netEncoder.parameters()])
         arti_params, articulation_aux = None, {}
         if self.enable_articulation and in_range(total_iter, self.cfg_articulation.articulation_iter_range):
+            for p in self.netArticulation.parameters():
+                p.requires_grad = True
             shape, arti_params, articulation_aux = self.forward_articulation(shape, feat_key, patch_key, mvp, w2c, batch_size, num_frames, epoch, total_iter)
-        
+        else:  # Dummy operations for accelerator ddp
+            shape.v_pos += sum([p.sum() * 0 for p in self.netArticulation.parameters()])
+
         light = self.netLight if self.enable_lighting else None
 
         aux = multi_hypothesis_aux

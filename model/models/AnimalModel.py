@@ -96,8 +96,9 @@ class AnimalModel:
         if self.cfg_optim_instance.use_scheduler:
             self.make_scheduler_instance = lambda optim: torch.optim.lr_scheduler.MultiStepLR(optim, milestones=self.cfg_optim_instance.scheduler_milestone, gamma=self.cfg_optim_instance.scheduler_gamma)
 
-        self.glctx = dr.RasterizeGLContext()
+        self.glctx = None
         self.device = None
+        self.accelerator = None
         self.mixed_precision = False
         self.total_loss = 0.
 
@@ -105,9 +106,15 @@ class AnimalModel:
             frame_dim=1, smooth_type=self.cfg_loss.smooth_type, loss_type=self.cfg_loss.loss_type
         )
 
+    def get_predictor(self, name):
+        predictor = getattr(self, name)
+        if isinstance(predictor, torch.nn.parallel.DistributedDataParallel):
+            return predictor.module
+        return predictor
+
     def load_model_state(self, cp):
-        base_missing, base_unexpected = self.netBase.load_state_dict(cp["netBase"], strict=False)
-        instance_missing, instance_unexpected = self.netInstance.load_state_dict(cp["netInstance"], strict=False)
+        base_missing, base_unexpected = self.get_predictor("netBase").load_state_dict(cp["netBase"], strict=False)
+        instance_missing, instance_unexpected = self.get_predictor("netInstance").load_state_dict(cp["netInstance"], strict=False)
         if base_missing: print(f"Missing keys in netBase:\n{base_missing}")
         if base_unexpected: print(f"Unexpected keys in netBase:\n{base_unexpected}")
         if instance_missing: print(f"Missing keys in netInstance:\n{instance_missing}")
@@ -122,8 +129,10 @@ class AnimalModel:
             self.schedulerInstance.load_state_dict(cp["schedulerInstance"])
 
     def get_model_state(self):
-        state = {"netBase": self.netBase.state_dict(),
-                 "netInstance": self.netInstance.state_dict()}
+        state = {
+            "netBase": self.accelerator.unwrap_model(self.netBase).state_dict(),
+            "netInstance": self.accelerator.unwrap_model(self.netInstance).state_dict()
+        }
         return state
 
     def get_optimizer_state(self):
@@ -137,21 +146,21 @@ class AnimalModel:
 
     def to(self, device):
         self.device = device
-        self.netBase.to(device)
-        self.netInstance.to(device)
+        self.get_predictor("netBase").to(device)
+        self.get_predictor("netInstance").to(device)
 
     def set_train(self):
-        self.netBase.train()
-        self.netInstance.train()
+        self.get_predictor("netBase").train()
+        self.get_predictor("netInstance").train()
 
     def set_eval(self):
-        self.netBase.eval()
-        self.netInstance.eval()
+        self.get_predictor("netBase").eval()
+        self.get_predictor("netInstance").eval()
 
     def reset_optimizers(self):
         print("Resetting optimizers...")
-        self.optimizerBase = get_optimizer(self.netBase, lr=self.cfg_optim_base.lr, weight_decay=self.cfg_optim_base.weight_decay)
-        self.optimizerInstance = get_optimizer(self.netInstance, self.cfg_optim_instance.lr, weight_decay=self.cfg_optim_instance.weight_decay)
+        self.optimizerBase = get_optimizer(self.get_predictor("netBase"), lr=self.cfg_optim_base.lr, weight_decay=self.cfg_optim_base.weight_decay)
+        self.optimizerInstance = get_optimizer(self.get_predictor("netInstance"), self.cfg_optim_instance.lr, weight_decay=self.cfg_optim_instance.weight_decay)
         if self.cfg_optim_base.use_scheduler:
             self.schedulerBase = self.make_scheduler_base(self.optimizerBase)
         if self.cfg_optim_instance.use_scheduler:
@@ -161,7 +170,8 @@ class AnimalModel:
         self.optimizerInstance.zero_grad()
         self.optimizerBase.zero_grad()
         if self.mixed_precision and self.scaler:
-            self.scaler.scale(self.total_loss).backward()
+            self.scaler.scale(self.total_loss)
+            self.accelerator.backward(self.total_loss)
             # Step optimizer if it is used, Unused optimizers will raise assertion error when unscaling
             try:
                 self.scaler.step(self.optimizerInstance)
@@ -173,7 +183,7 @@ class AnimalModel:
                 pass
             self.scaler.update()
         else:
-            self.total_loss.backward()
+            self.accelerator.backward(self.total_loss)
             self.optimizerInstance.step()
             self.optimizerBase.step()
         self.total_loss = 0.
@@ -202,6 +212,8 @@ class AnimalModel:
         else:
             raise NotImplementedError
 
+        if self.glctx is None:
+            self.glctx = dr.RasterizeGLContext()
         rendered = render.render_mesh(
             self.glctx,
             shape,
@@ -277,7 +289,7 @@ class AnimalModel:
     def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None):
         losses = {}
         aux = {}
-        losses.update(self.netBase.netShape.get_sdf_reg_loss())
+        losses.update(self.get_predictor("netBase").netShape.get_sdf_reg_loss())
         if arti_params is not None:
             losses['arti_reg_loss'] = (arti_params ** 2).mean()  # R_art
         if deformation is not None:
@@ -333,17 +345,17 @@ class AnimalModel:
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res_coarse
         else:
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res
-        if self.netBase.netShape.grid_res != grid_res:
-            self.netBase.netShape.load_tets(grid_res)
+        if self.get_predictor("netBase").netShape.grid_res != grid_res:
+            self.get_predictor("netBase").netShape.load_tets(grid_res)
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 prior_shape, dino_net = self.netBase(total_iter=total_iter, is_training=is_training)
         else:
             prior_shape, dino_net = self.netBase(total_iter=total_iter, is_training=is_training)
 
         ## predict instance specific parameters
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 shape, pose_raw, pose, mvp, w2c, campos, texture, im_features, deformation, arti_params, light, forward_aux = self.netInstance(input_image, prior_shape, epoch, total_iter, is_training=is_training)
             pose_raw, pose, mvp, w2c, campos, im_features, arti_params = \
                 map(to_float, [pose_raw, pose, mvp, w2c, campos, im_features, arti_params])
@@ -362,7 +374,7 @@ class AnimalModel:
             if render_flow:
                 render_modes += ['flow']
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     renders = self.render(
                         render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light,
                         prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
@@ -386,7 +398,7 @@ class AnimalModel:
 
             ## compute reconstruction losses
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     losses = self.compute_reconstruction_losses(
                         image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt,
                         dino_feat_im_pred, background_mode=self.cfg_render.background_mode, reduce=False
@@ -410,9 +422,9 @@ class AnimalModel:
                         logit_loss_target += loss * loss_weight
 
                     ## multiply the loss with probability of the rotation hypothesis (detached)
-                    if self.netInstance.cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
+                    if self.get_predictor("netInstance").cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
                         loss_prob = rot_prob.detach().view(batch_size, num_frames)[:, :loss.shape[1]]  # handle edge case for flow loss with one frame less
-                        loss = loss * loss_prob *self.netInstance.num_pose_hypos
+                        loss = loss * loss_prob * self.get_predictor("netInstance").num_pose_hypos
                     ## only compute flow loss for frames with the same rotation hypothesis
                     if name == 'flow_loss' and num_frames > 1:
                         ri = rot_idx.view(batch_size, num_frames)
@@ -427,7 +439,7 @@ class AnimalModel:
 
         ## regularizers
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 regularizers, aux = self.compute_regularizers(
                     arti_params=arti_params, deformation=deformation, pose_raw=pose_raw,
                     posed_bones=forward_aux.get("posed_bones")
@@ -462,9 +474,9 @@ class AnimalModel:
         metrics = {'loss': total_loss, **final_losses}
 
         log = SimpleNamespace(**locals())
-        if logger is not None and (self.enable_render or not is_training):
+        if self.accelerator.is_main_process and logger is not None and (self.enable_render or not is_training):
             self.log_visuals(log, logger)
-        if save_results:
+        if self.accelerator.is_main_process and save_results:
             self.save_results(log)
         return metrics
 
@@ -534,18 +546,18 @@ class AnimalModel:
                 logger.add_histogram(log.logger_prefix+'pose/rot_prob_%d'%i, rp, log.total_iter)
 
         if sdf_feats is None:
-            logger.add_histogram(log.logger_prefix+'sdf', self.netBase.netShape.get_sdf(), log.total_iter)
+            logger.add_histogram(log.logger_prefix+'sdf', self.get_predictor("netBase").netShape.get_sdf(), log.total_iter)
         else:
-            logger.add_histogram(log.logger_prefix+'sdf', self.netBase.netShape.get_sdf(feats=log.class_vector), log.total_iter)
+            logger.add_histogram(log.logger_prefix+'sdf', self.get_predictor("netBase").netShape.get_sdf(feats=log.class_vector), log.total_iter)
         logger.add_histogram(log.logger_prefix+'coordinates', log.shape.v_pos, log.total_iter)
 
         render_modes = ['geo_normal', 'kd', 'shading']
         rendered = self.render(render_modes, log.shape, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
         geo_normal, albedo, shading = map(lambda x: expandBF(x, log.batch_size, log.num_frames), rendered)
-        if hasattr(self.netInstance, "articulated_shape_gt"):
-            rendered_gt = self.render(render_modes, self.netInstance.articulated_shape_gt, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
+        if hasattr(self.get_predictor("netInstance"), "articulated_shape_gt"):
+            rendered_gt = self.render(render_modes, self.get_predictor("netInstance").articulated_shape_gt, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
             geo_normal_gt, albedo_gt, shading_gt = map(lambda x: expandBF(x, log.batch_size, log.num_frames), rendered_gt)
-            del self.netInstance.articulated_shape_gt
+            del self.get_predictor("netInstance").articulated_shape_gt
 
         if log.light is not None:
             param_names = ['dir_x', 'dir_y', 'dir_z', 'int_ambient', 'int_diffuse']
@@ -628,12 +640,12 @@ class AnimalModel:
             [0,                    1, 0,                   0],
             [-np.sin(delta_angle), 0, np.cos(delta_angle), 0],
             [0,                    0, 0,                   1],
-        ]).to(self.device).repeat(b, 1, 1)
+        ]).to(self.accelerator.device).repeat(b, 1, 1)
 
         w2c = torch.FloatTensor(np.diag([1., 1., 1., 1]))
         w2c[:3, 3] = torch.FloatTensor([0, 0, -self.cfg_render.cam_pos_z_offset *1.1])
-        w2c = w2c.repeat(b, 1, 1).to(self.device)
-        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.device)
+        w2c = w2c.repeat(b, 1, 1).to(self.accelerator.device)
+        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.accelerator.device)
         mvp = torch.bmm(proj, w2c)
         campos = -w2c[:, :3, 3]
 
