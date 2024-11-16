@@ -99,6 +99,10 @@ To train MagicPony on the provided horse dataset or bird dataset from scratch, s
 ```shell
 python run.py --config-name train_magicpony_horse
 ```
+For multi-GPU training, use the `accelerator launch` command, e.g.:
+```shell
+accelerator launch --multi_gpu run.py --config-name train_magicpony_horse
+```
 
 To train it on the provided giraffe, zebra, or cow datasets, which are much smaller, please finetune from a _pretrained_ horse model using the finetuning configs: `finetune_magicpony_giraffe`, `finetune_magicpony_zebra`, or `finetune_magicpony_cow`.
 
