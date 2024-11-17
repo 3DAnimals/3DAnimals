@@ -60,7 +60,7 @@ class FaunaModel(AnimalModel):
 
     def get_model_state(self):
         state = super().get_model_state()
-        state.update({"netDisc": self.netDisc.state_dict()})
+        state.update({"netDisc": self.accelerator.unwrap_model(self.netDisc).state_dict()})
         return state
 
     def get_optimizer_state(self):
@@ -70,19 +70,19 @@ class FaunaModel(AnimalModel):
 
     def to(self, device):
         super().to(device)
-        self.netDisc.to(device)
+        self.get_predictor("netDisc").to(device)
 
     def set_train(self):
         super().set_train()
-        self.netDisc.train()
+        self.get_predictor("netDisc").train()
 
     def set_eval(self):
         super().set_eval()
-        self.netDisc.eval()
+        self.get_predictor("netDisc").eval()
 
     def reset_optimizers(self):
         super().reset_optimizers()
-        self.optimizerDisc = get_optimizer(self.netBase, lr=self.cfg_optim_discriminator.lr, weight_decay=self.cfg_optim_discriminator.weight_decay)
+        self.optimizerDisc = get_optimizer(self.get_predictor("netBase"), lr=self.cfg_optim_discriminator.lr, weight_decay=self.cfg_optim_discriminator.weight_decay)
     
     def parse_dict_definition(self, dict_config, total_iter):
         '''
@@ -123,18 +123,18 @@ class FaunaModel(AnimalModel):
                 [0,              1, 0,             0],
                 [-np.sin(angle), 0, np.cos(angle), 0],
                 [0,              0, 0,             1],
-            ]).to(self.device)
+            ]).to(self.accelerator.device)
             delta_rot_matrix.append(angle_matrix)
         delta_rot_matrix = torch.stack(delta_rot_matrix, dim=0)
         
         w2c = torch.FloatTensor(np.diag([1., 1., 1., 1]))
         w2c[:3, 3] = torch.FloatTensor([0, 0, -self.cfg_render.cam_pos_z_offset *1.4])
-        w2c = w2c.repeat(b, 1, 1).to(self.device)
+        w2c = w2c.repeat(b, 1, 1).to(self.accelerator.device)
         # use the predicted transition
         w2c_pred = w2c_pred.detach()
         w2c[:, :3, 3] = w2c_pred[:b][:, :3, 3]
 
-        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.device)
+        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.accelerator.device)
         mvp = torch.bmm(proj, w2c)
         campos = -w2c[:, :3, 3]
 
@@ -283,7 +283,7 @@ class FaunaModel(AnimalModel):
     def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None, class_vector=None):
         losses = {}
         aux = {}
-        losses.update(self.netBase.netShape.get_sdf_reg_loss(feats=class_vector))
+        losses.update(self.get_predictor("netBase").netShape.get_sdf_reg_loss(feats=class_vector))
         if arti_params is not None:
             losses['arti_reg_loss'] = (arti_params ** 2).mean()
         if deformation is not None:
@@ -347,19 +347,19 @@ class FaunaModel(AnimalModel):
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res_coarse
         else:
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res
-        if self.netBase.netShape.grid_res != grid_res:
-            self.netBase.netShape.load_tets(grid_res)
+        if self.get_predictor("netBase").netShape.grid_res != grid_res:
+            self.get_predictor("netBase").netShape.load_tets(grid_res)
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
-                prior_shape, dino_net, bank_embedding = self.netBase(total_iter=total_iter, is_training=is_training, batch=batch, bank_enc=self.netInstance.netEncoder)
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
+                prior_shape, dino_net, bank_embedding = self.netBase(total_iter=total_iter, is_training=is_training, batch=batch, bank_enc=self.get_predictor("netInstance").netEncoder)
         else:
-            prior_shape, dino_net, bank_embedding = self.netBase(total_iter=total_iter, is_training=is_training, batch=batch, bank_enc=self.netInstance.netEncoder)
+            prior_shape, dino_net, bank_embedding = self.netBase(total_iter=total_iter, is_training=is_training, batch=batch, bank_enc=self.get_predictor("netInstance").netEncoder)
         
         class_vector = bank_embedding[0]
 
         ## predict instance specific parameters
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 shape, pose_raw, pose, mvp, w2c, campos, texture, im_features, deformation, arti_params, light, forward_aux = self.netInstance(input_image, prior_shape, epoch, total_iter, is_training=is_training)
             pose_raw, pose, mvp, w2c, campos, im_features, arti_params = \
                 map(to_float, [pose_raw, pose, mvp, w2c, campos, im_features, arti_params])
@@ -381,7 +381,7 @@ class FaunaModel(AnimalModel):
             if render_flow:
                 render_modes += ['flow']
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     renders = self.render(
                         render_modes, shape, texture, mvp, w2c, campos, (h, w), im_features=im_features, light=light, 
                         prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames, 
@@ -405,7 +405,7 @@ class FaunaModel(AnimalModel):
 
             ## compute reconstruction losses
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     losses = self.compute_reconstruction_losses(
                         image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt,
                         dino_feat_im_pred, background_mode=self.cfg_render.background_mode, reduce=False
@@ -435,9 +435,9 @@ class FaunaModel(AnimalModel):
                         logit_loss_target += loss * loss_weight
 
                     ## multiply the loss with probability of the rotation hypothesis (detached)
-                    if self.netInstance.cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
+                    if self.get_predictor("netInstance").cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
                         loss_prob = rot_prob.detach().view(batch_size, num_frames)[:, :loss.shape[1]]  # handle edge case for flow loss with one frame less
-                        loss = loss * loss_prob *self.netInstance.num_pose_hypos
+                        loss = loss * loss_prob *self.get_predictor("netInstance").num_pose_hypos
                     ## only compute flow loss for frames with the same rotation hypothesis
                     if name == 'flow_loss' and num_frames > 1:
                         ri = rot_idx.view(batch_size, num_frames)
@@ -460,7 +460,7 @@ class FaunaModel(AnimalModel):
 
         ## regularizers
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 regularizers, aux = self.compute_regularizers(
                     arti_params=arti_params, deformation=deformation, pose_raw=pose_raw,
                     posed_bones=forward_aux.get("posed_bones"),
