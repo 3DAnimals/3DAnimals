@@ -65,8 +65,9 @@ def clean_checkpoint(checkpoint_dir, keep_num=2):
         ))
         if len(names) > keep_num:
             for name in names[:-keep_num]:
-                print(f"Deleting obslete checkpoint file {name}")
-                os.remove(name)
+                if os.path.exists(name):
+                    print(f"Deleting obslete checkpoint file {name}")
+                    os.remove(name)
 
 
 def archive_code(arc_path, filetypes=['.py']):
