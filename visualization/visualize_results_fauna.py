@@ -452,7 +452,7 @@ def main(cfg):
                     aux=model.netInstance.bone_aux, attach_legs_to_body=True)
                 
                 arti_param_files = sorted(glob.glob(osp.join(cfg.arti_param_dir, "arti_params*.txt")))
-                arti_params = np.stack([np.loadtxt(f)*180/np.pi for f in arti_param_files], axis=0)
+                arti_params = np.stack([np.loadtxt(f) for f in arti_param_files], axis=0)
                 arti_params = arti_params / 180 * np.pi
 
                 interpolate_num = 5
@@ -470,10 +470,10 @@ def main(cfg):
 
                 gray_light = FixedDirectionLight(direction=torch.FloatTensor([0, 0, 1]).to(device), amb=0.2, diff=0.7)
 
-                num_frames = animate_arti_params.shape[0]
+                num_vis_frames = animate_arti_params.shape[0]
 
                 for arti_id, arti_param in enumerate(animate_arti_params):
-                    rot_angle = torch.FloatTensor([0, np.pi * 2 / (num_frames - 1) * arti_id, 0]).to(device)
+                    rot_angle = torch.FloatTensor([0, np.pi * 2 / (num_vis_frames - 1) * arti_id, 0]).to(device)
                     mtx = torch.eye(4).to(device)
                     mtx[:3, :3] = euler_angles_to_matrix(rot_angle, "XYZ")
                     cur_w2c = torch.matmul(w2c_arti, mtx[None])
@@ -549,7 +549,7 @@ def main(cfg):
                 if cfg.category != "horse":
                     raise NotImplementedError("Canonicalization mode is only supported for horse.")
                 
-                num_frames = 25
+                num_vis_frames = 25
                 
                 canon_viewpoint = torch.FloatTensor([0, -120, 0]) / 180 * np.pi
                 canon_viewpoint_axis = transforms.matrix_to_axis_angle(
@@ -568,19 +568,19 @@ def main(cfg):
                     deformed_shape.v_pos[:, None], model.netInstance.num_body_bones, n_legs=model.netInstance.num_legs, n_leg_bones=model.netInstance.num_leg_bones,
                     body_bones_mode=model.netInstance.body_bones_mode, compute_kinematic_chain=True, aux=model.netInstance.bone_aux, attach_legs_to_body=True)
 
-                for frame_id in range(num_frames):
+                for frame_id in range(num_vis_frames):
                     viewpoint_axis = ori_viewpoint_axis * \
-                        (1 - frame_id / (num_frames - 1)) + \
+                        (1 - frame_id / (num_vis_frames - 1)) + \
                         canon_viewpoint_axis.to(
-                            device) * (frame_id / (num_frames - 1))
+                            device) * (frame_id / (num_vis_frames - 1))
                     cur_pose_R = transforms.axis_angle_to_matrix(
                         viewpoint_axis).view(1, 3, 3).to(device).transpose(1, 2)
-                    cur_cam_dist = 10 * (1 - frame_id / (num_frames - 1)) + 14 * (frame_id / (num_frames - 1))
-                    cur_pose_T = pose_T * (1 - frame_id / (num_frames - 1))
+                    cur_cam_dist = 10 * (1 - frame_id / (num_vis_frames - 1)) + 14 * (frame_id / (num_vis_frames - 1))
+                    cur_pose_T = pose_T * (1 - frame_id / (num_vis_frames - 1))
                     cur_pose = torch.cat([cur_pose_R.reshape(1, 9), cur_pose_T.reshape(1, 3)], dim=1)
                     cur_arti_param = starting_arti_param * \
-                        (1 - frame_id / (num_frames - 1)) + \
-                        animate_start_arti_param * (frame_id / (num_frames - 1))
+                        (1 - frame_id / (num_vis_frames - 1)) + \
+                        animate_start_arti_param * (frame_id / (num_vis_frames - 1))
 
                     cur_mvp, cur_w2c, cur_campos = model.netInstance.get_camera_extrinsics_from_pose(
                         cur_pose, offset_extra=cur_cam_dist - 10)
