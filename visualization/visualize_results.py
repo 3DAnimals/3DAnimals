@@ -427,7 +427,7 @@ def main(cfg):
                     aux=model.netInstance.bone_aux, attach_legs_to_body=True)
                 
                 arti_param_files = sorted(glob.glob(osp.join(cfg.arti_param_dir, "arti_params*.txt")))
-                arti_params = np.stack([np.loadtxt(f)*180/np.pi for f in arti_param_files], axis=0)
+                arti_params = np.stack([np.loadtxt(f) for f in arti_param_files], axis=0)
                 arti_params = arti_params / 180 * np.pi
 
                 interpolate_num = 5
