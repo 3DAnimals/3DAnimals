@@ -56,7 +56,7 @@ class PoseConfig:
     naive_probs_iter: int = 2000
     best_pose_start_iter: int = 6000
     
-    rand_campos: bool = False
+    rand_campos: bool = True
 
 
 @dataclass
