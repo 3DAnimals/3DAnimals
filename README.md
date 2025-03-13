@@ -46,6 +46,10 @@ Once the data is prepared, both training and inference of all models can be exec
 ```shell
 python run.py --config-name CONFIG_NAME
 ```
+or for training with DDP using multiple GPUs:
+```shell
+accelerate launch --multi_gpu run.py --config-name CONFIG_NAME
+```
 `CONFIG_NAME` can be any of the configs specified in `config/`, e.g., `test_magicpony_horse` or `train_magicpony_horse`.
 
 ### Testing using the Pretrained Models
