@@ -9,6 +9,7 @@
 
 import os
 import torch
+from tqdm import tqdm
 
 from . import texture
 from . import mesh
@@ -146,7 +147,7 @@ def write_obj(folder, fname, mesh, idx, save_material=True, feat=None, resolutio
         if v_tex is not None and save_material:
             print("    writing %d texcoords" % len(v_tex))
             assert(len(t_pos_idx) == len(t_tex_idx))
-            for v in v_tex:
+            for v in tqdm(v_tex):
                 f.write('vt {} {} \n'.format(v[0], 1.0 - v[1]))
 
         if v_nrm is not None:

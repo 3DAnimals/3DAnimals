@@ -95,6 +95,18 @@ def shade(
     else:
         assert False, "Invalid BSDF '%s'" % bsdf
 
+    ################################################################################
+    # Compute Depth
+    ################################################################################
+    depth = None
+    if 'depth' in render_modes:
+        gb_pos_hom = torch.cat([gb_pos, torch.ones_like(gb_pos[..., :1])], dim=-1)  # Shape: (b, h, w, 4)
+        gb_pos_cam = torch.matmul(gb_pos_hom.view(b, -1, 4), w2c.transpose(-1, -2)).view(b, h, w, 4)
+        depth = gb_pos_cam[..., 2]  # Shape: (b, h, w)
+        depth_min = depth.amin(dim=(1, 2), keepdim=True)
+        depth_max = depth.amax(dim=(1, 2), keepdim=True)
+        depth = ((depth - depth_min) / (depth_max - depth_min)).unsqueeze(-1)
+
     buffers = {
         'shaded' : shaded_col,
         'kd'     : kd,
@@ -109,6 +121,8 @@ def shade(
         buffers['flow'] = delta_xy_interp
     if dino_pred is not None:
         buffers['dino_pred'] = dino_pred
+    if depth is not None:
+        buffers['depth'] = depth
 
     if render_modes is not None:
         buffers = {mode: torch.cat((buffers[mode], alpha), dim=-1) for mode in render_modes}
@@ -294,8 +308,10 @@ def render_mesh(
         if key not in layers[0][0].keys():
             out_buffers.append(None)
         else:
-            antialias = key in ['shaded', 'flow', 'dino_pred']
-            bg = background if key in ['shaded'] else torch.zeros_like(layers[0][0][key])
+            antialias = key in ['shaded', 'flow', 'dino_pred', 'depth', 'shading']
+            bg = background if key in ['shaded', 'geo_normal', 'shading'] else torch.zeros_like(layers[0][0][key])
+            if key == "shading" and background is not None:
+                bg = bg[:, :, :, 2:]
             accum = composite_buffer(key, layers, bg, antialias)
 
             # Downscale to framebuffer resolution. Use avg pooling 
@@ -311,6 +327,8 @@ def render_mesh(
                 out_buffer = out_buffer[..., :2]
             elif key == 'dino_pred':
                 out_buffer = out_buffer[..., :-1]
+            elif key == 'depth':
+                out_buffer = out_buffer[..., :1]
 
             # NHWC -> NCHW
             out_buffer = out_buffer.permute(0, 3, 1, 2)

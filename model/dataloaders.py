@@ -20,6 +20,7 @@ class DataLoaderConfig:
     load_dino_feature: bool = False
     load_dino_cluster: bool = False
     dino_feature_dim: int = 64
+    local_dir: str = None
 
     # sequence specific
     skip_beginning: int = 0

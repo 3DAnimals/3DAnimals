@@ -123,6 +123,7 @@ cfg_predictor_instance:
     max_arti_angle: 60
     constrain_legs: false # use fauna regularizations
     output_multiplier: 0.1
+    enable_refine: false
 
   enable_lighting: true
   cfg_light:

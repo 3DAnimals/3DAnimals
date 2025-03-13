@@ -6,20 +6,23 @@ from torch.utils.data import Dataset
 import torchvision.datasets.folder
 from torchvision.transforms.functional import InterpolationMode
 from .util import *
+from ..utils.misc import normalize_depth
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, in_image_size=256, out_image_size=256, shuffle=False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64):
+    def __init__(self, root, in_image_size=256, out_image_size=256, shuffle=False, load_background=False, random_xflip=False, load_dino_feature=False, load_dino_cluster=False, dino_feature_dim=64, load_depth=False, load_articulation=False, reverse_articulation=False, load_keypoint=False, local_dir=None):
         super().__init__()
-        self.image_loader = ["rgb.*", torchvision.datasets.folder.default_loader]
+        self.image_loader = ["rgb.jpg", torchvision.datasets.folder.default_loader]
         self.mask_loader = ["mask.png", torchvision.datasets.folder.default_loader]
         self.bbox_loader = ["box.txt", box_loader]
+        if local_dir is not None:
+            root = copy_data_to_local(root, local_dir)
         self.samples = self._parse_folder(root)
         if shuffle:
             random.shuffle(self.samples)
         self.in_image_size = in_image_size
         self.out_image_size = out_image_size
-        self.image_transform = transforms.Compose([transforms.Resize(self.in_image_size, interpolation=InterpolationMode.BILINEAR), transforms.ToTensor()])
+        self.image_transform = transforms.Compose([transforms.Resize(self.out_image_size, interpolation=InterpolationMode.BILINEAR), transforms.ToTensor()])
         self.mask_transform = transforms.Compose([transforms.Resize(self.out_image_size, interpolation=InterpolationMode.NEAREST), transforms.ToTensor()])
         self.load_dino_feature = load_dino_feature
         if load_dino_feature:
@@ -30,7 +33,7 @@ class ImageDataset(Dataset):
         self.load_background = load_background
         self.random_xflip = random_xflip
 
-    def _parse_folder(self, path):
+    def _parse_folder(self, path):  # TODO: currently only support one image suffix
         image_path_suffix = self.image_loader[0]
         result = sorted(glob(os.path.join(path, '**/*'+image_path_suffix), recursive=True))
         if '*' in image_path_suffix:

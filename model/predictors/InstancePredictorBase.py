@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
 from model import networks
 from model.utils import misc
 from model.geometry.skinning import estimate_bones, skinning
@@ -89,6 +90,10 @@ class ArticulationConfig:
     max_arti_angle: float = 60.
     constrain_legs: bool = False
     output_multiplier: float = 1.
+    enable_refine: bool = False
+    refine_feature_mode: bool = False
+    predict_delta: bool = False
+    use_fauna_constraints: bool = False
 
 
 @dataclass
@@ -210,7 +215,23 @@ class InstancePredictorBase(nn.Module):
                 embedder_scalar=np.pi * 0.9  # originally (-1, 1) rescale to (-pi, pi) * 0.9
             )
             self.kinematic_tree_epoch = -1  # initialize to -1 to force compute kinematic tree at first epoch
-        
+
+            if self.cfg_articulation.enable_refine:
+                feat_dim = 0
+                if "dino_global" in self.cfg_articulation.refine_feature_mode:
+                    feat_dim += enc_feat_dim
+                if "dino_sample" in self.cfg_articulation.refine_feature_mode:
+                    feat_dim += vit_feat_dim
+                self.netArticulationRefine = networks.ArticulationNetwork(
+                    self.cfg_articulation.architecture,
+                    feat_dim,
+                    posenc_dim=1 + 2 + 3 * 2,  # bone index + 2D mid bone position + 3D joint locations
+                    num_layers=self.cfg_articulation.num_layers,
+                    nf=self.cfg_articulation.hidden_size,
+                    n_harmonic_functions=self.cfg_articulation.embedder_freq,
+                    embedder_scalar=np.pi * 0.9  # originally (-1, 1) rescale to (-pi, pi) * 0.9
+                )
+
         ## Lighting network
         if self.enable_lighting:
             self.netLight = light.DirectionalLight(
@@ -225,7 +246,7 @@ class InstancePredictorBase(nn.Module):
         feat_out, feat_key, patch_out, patch_key = self.netEncoder(images_in, return_patches=True)
         return feat_out, feat_key, patch_out, patch_key
     
-    def forward_pose(self, patch_out, patch_key):
+    def forward_pose(self, patch_out, patch_key, **kwargs):
         if self.cfg_pose.architecture == 'encoder_dino_patch_key':
             pose = self.netPose(patch_key)  # Shape: (B, latent_dim)
         elif self.cfg_pose.architecture == 'encoder_dino_patch_out':
@@ -360,7 +381,58 @@ class InstancePredictorBase(nn.Module):
             bones_feat = None
         return bones, bones_feat, bones_pos_in
 
-    def apply_articulation_constraints(self, articulation_angles):
+    def get_bones_from_articulation(self, verts, feat, patch_feat, mvp, w2c, bones, articulation_angles):
+        """Get estimated bones from prior shape and corresponding bone feature and encoding"""
+        ## get posed bones from articulation angle
+        verts_articulated, aux = skinning(
+            verts, bones, self.kinematic_tree, articulation_angles, output_posed_bones=True,
+            temperature=self.cfg_articulation.skinning_temperature
+        )
+        ## 2D location of bone mid point
+        batch_size, num_frames = verts_articulated.shape[:2]
+        num_bones = bones.shape[2]
+        bones_pos = aux['posed_bones']  # (B, F, K, 2, 3)
+        bones_pos = rearrange(bones_pos, "b f ... -> (b f) ...")  # (BxF, K, 2, 3)
+        articulation_angles = rearrange(articulation_angles, "b f ... -> (b f) ...")  # (BxF, K, 3)
+        bones_mid_pos = bones_pos.mean(2)  # NxKx3
+        bones_mid_pos_world4 = torch.cat([bones_mid_pos, torch.ones_like(bones_mid_pos[..., :1])], -1)  # NxKx4
+        bones_mid_pos_clip4 = bones_mid_pos_world4 @ mvp.transpose(-1, -2)
+        bones_mid_pos_2d = bones_mid_pos_clip4[..., :2] / bones_mid_pos_clip4[..., 3:4]
+        bones_mid_pos_2d = bones_mid_pos_2d.detach()  # we don't want gradient to flow through the camera projection
+
+        ## 3D locations of two bone end points in camera space
+        bones_pos_world4 = torch.cat([bones_pos, torch.ones_like(bones_pos[..., :1])], -1)  # NxKx2x4
+        bones_pos_cam4 = bones_pos_world4 @ w2c[:, None].transpose(-1, -2)
+        bones_pos_cam3 = bones_pos_cam4[..., :3] / bones_pos_cam4[..., 3:4]
+        bones_pos_cam3 = bones_pos_cam3 + torch.FloatTensor(
+            [0, 0, self.cfg_pose.cam_pos_z_offset]
+        ).to(bones_pos_cam3.device).view(1, 1, 1, 3)
+        # (-1, 1), NxKx(2*3)
+        bones_pos_3d = bones_pos_cam3.view(batch_size * num_frames, num_bones, 2 * 3) / self.spatial_scale * 2
+
+        ## bone index
+        bones_idx = torch.arange(num_bones).to(bones_pos.device)
+        bones_idx_in = ((bones_idx[None, :, None] + 0.5) / num_bones * 2 - 1).repeat(batch_size * num_frames, 1, 1)
+        bones_pos_in = torch.cat([bones_mid_pos_2d, bones_pos_3d, bones_idx_in], -1)
+        bones_pos_in = bones_pos_in.detach()  # we don't want gradient to flow through the camera pose
+
+        ## get global features
+        dino_feat = feat[:, None].repeat(1, num_bones, 1)
+
+        ## get grid sampled bone feature
+        dino_sample = F.grid_sample(
+            patch_feat, bones_mid_pos_2d.view(batch_size * num_frames, 1, -1, 2), mode='bilinear', align_corners=False
+        ).squeeze(dim=-2).permute(0, 2, 1)  # (BxF, K, feat_dim)
+        bones_feat = []
+        if "dino_global" in self.cfg_articulation.refine_feature_mode:
+            bones_feat.append(dino_feat)
+        if "dino_sample" in self.cfg_articulation.refine_feature_mode:
+            bones_feat.append(dino_sample)
+        bones_feat = torch.cat(bones_feat, -1)
+        return bones, bones_feat, bones_pos_in
+
+
+    def apply_articulation_constraints(self, articulation_angles, **kwargs):
         articulation_angles *= self.cfg_articulation.output_multiplier
         if self.cfg_articulation.static_root_bones:
             root_bones = [self.cfg_articulation.num_body_bones // 2 - 1, self.cfg_articulation.num_body_bones - 1]
@@ -379,7 +451,37 @@ class InstancePredictorBase(nn.Module):
             tmp_mask[:, :, leg_bones_idx, 1] = 1  # side bending / rotation around y axis
             articulation_angles = tmp_mask * (articulation_angles * 0.3) \
                 + (1 - tmp_mask) * articulation_angles  # limit to (-0.3, 0.3)
-    
+
+            # (From Fauna) new regularizations, for bottom 2 bones of each leg, they can only rotate around x-axis,
+            # and for the toppest bone of legs, restrict its angles in a smaller range
+            if self.cfg_articulation.use_fauna_constraints:
+                print("Using Fauna constraints")
+                # regularize the y,z rotation angle of first leg bones
+                leg_bones_top = [10, 13, 16, 19]
+                tmp_mask = torch.zeros_like(articulation_angles)
+                tmp_mask[:, :, leg_bones_top, 1] = 1
+                tmp_mask[:, :, leg_bones_top, 2] = 1
+                articulation_angles = tmp_mask * (articulation_angles * 0.05) + (1 - tmp_mask) * articulation_angles
+
+                # regularize x rotation angle of top two leg bones
+                tmp_mask = torch.zeros_like(articulation_angles)
+                tmp_mask[:, :, leg_bones_top, 0] = 1
+                articulation_angles = tmp_mask * (articulation_angles * 0.75) + (1 - tmp_mask) * articulation_angles
+
+                # zero out y,z rotation angle, regularize x rotation angle of bottom leg bones
+                leg_bones_bottom = [8, 9, 11, 12, 14, 15, 17, 18]
+                tmp_mask = torch.ones_like(articulation_angles)
+                tmp_mask[:, :, leg_bones_bottom, 1] = 0
+                tmp_mask[:, :, leg_bones_bottom, 2] = 0
+                tmp_mask[:, :, leg_bones_bottom, 0] = 0.3
+                articulation_angles = tmp_mask * articulation_angles
+
+                # regularize body bone z-rotation (twist)
+                body_bones_mask = [0, 1, 2, 3, 4, 5, 6, 7]
+                tmp_body_mask = torch.zeros_like(articulation_angles)
+                tmp_body_mask[:, :, body_bones_mask, 2] = 1
+                articulation_angles = tmp_body_mask * (articulation_angles * 0.1) + (1 - tmp_body_mask) * articulation_angles
+
         if hasattr(self.cfg_articulation, "extra_constraints") and self.cfg_articulation.extra_constraints:
 
             leg_bones_posx = [self.cfg_articulation.num_body_bones + i for i in range(self.cfg_articulation.num_leg_bones * self.cfg_articulation.num_legs // 2)]
@@ -392,7 +494,6 @@ class InstancePredictorBase(nn.Module):
             tmp_mask = torch.zeros_like(articulation_angles)
             tmp_mask[:, :, leg_bones_posx + leg_bones_negx, 1] = 1
             articulation_angles = tmp_mask * (articulation_angles * 0.3) + (1 - tmp_mask) * articulation_angles  # (-0.4, 0.4),  limit side bending
-            print("constrain legs: Done!")
 
             leg_bones_top = [8, 11, 14, 17]
             tmp_mask = torch.zeros_like(articulation_angles)
@@ -405,12 +506,11 @@ class InstancePredictorBase(nn.Module):
             tmp_mask[:, :, leg_bones_bottom, 1] = 0
             tmp_mask[:, :, leg_bones_bottom, 2] = 0
             articulation_angles = tmp_mask * articulation_angles
-            print("constrain legs: Done!")
 
         articulation_angles = articulation_angles * self.cfg_articulation.max_arti_angle / 180 * np.pi
         return articulation_angles
 
-    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter):
+    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter, **kwargs):
         verts = shape.v_pos
         if len(verts) == batch_size * num_frames:
             verts = verts.view(batch_size, num_frames, *verts.shape[1:])  # BxFxNx3
@@ -418,13 +518,62 @@ class InstancePredictorBase(nn.Module):
             verts = verts[None]  # 1x1xNx3
 
         bones, bones_feat, bones_pos_in = self.get_bones(
-            verts, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter
+            verts, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter,
         )
 
         articulation_angles = self.netArticulation(
             bones_feat, bones_pos_in
         ).view(batch_size, num_frames, bones.shape[2], 3)  # (B, F, K, 3)
         articulation_angles = self.apply_articulation_constraints(articulation_angles)
+
+        if self.cfg_articulation.enable_refine:
+            _, bones_feat, bones_pos_in = self.get_bones_from_articulation(
+                verts, feat, patch_feat, mvp, w2c, bones, articulation_angles,
+            )
+            if self.cfg_articulation.predict_delta:
+                articulation_angles_delta = self.netArticulationRefine(
+                    bones_feat, bones_pos_in
+                ).view(batch_size, num_frames, bones.shape[2], 3)
+                articulation_angles = articulation_angles + articulation_angles_delta
+            else:
+                articulation_angles = self.netArticulationRefine(
+                    bones_feat, bones_pos_in
+                ).view(batch_size, num_frames, bones.shape[2], 3)
+                articulation_angles = self.apply_articulation_constraints(articulation_angles)
+
+        # Use for synthetic data generation only
+        if hasattr(self.cfg_articulation, "random_switch_legs") and self.cfg_articulation.random_switch_legs:
+            # Random switch left and right last dim articulation for diverse articulation generation
+            leg_idx = [[[8,9,10],[17,18,19]],[[11,12,13],[14,15,16]]]
+            b, f = articulation_angles.shape[:2]
+            articulation_angles = rearrange(articulation_angles, "b f k c -> (b f) k c")
+            for i in range(b*f):
+                if np.random.rand() > 0.5:
+                    temp = articulation_angles[i, leg_idx[0][0], 0].clone()
+                    articulation_angles[i, leg_idx[0][0], 0] = articulation_angles[i, leg_idx[0][1], 0].clone()
+                    articulation_angles[i, leg_idx[0][1], 0] = temp
+                if np.random.rand() > 0.5:
+                    temp = articulation_angles[i, leg_idx[1][0], 0].clone()
+                    articulation_angles[i, leg_idx[1][0], 0] = articulation_angles[i, leg_idx[1][1], 0].clone()
+                    articulation_angles[i, leg_idx[1][1], 0] = temp
+
+            # Restrict and random sample top bones within 0.5 rad x rotation
+            random_flag = torch.zeros_like(articulation_angles).bool()
+            top_leg_bones = [10, 13, 16, 19]
+            random_flag[:, top_leg_bones, 0] = articulation_angles[:, top_leg_bones, 0].abs() > 0.5
+            articulation_angles[random_flag] = (torch.rand_like(articulation_angles[random_flag]) - 0.5)  # (-0.5,0.5)
+            # Restrict middle bones to 0.75 rad rotation
+            random_flag = torch.zeros_like(articulation_angles).bool()
+            top_leg_bones = [9, 12, 15, 18]
+            random_flag[:, top_leg_bones, 0] = articulation_angles[:, top_leg_bones, 0].abs() > 0.75
+            articulation_angles[random_flag] = (torch.rand_like(articulation_angles[random_flag]) - 0.5) * (0.75/0.5)  # (-0.75,0.75)
+            # Randomly reverse a rear leg bone x rotation
+            rear_leg_bones = [[11, 12, 13], [14, 15, 16]]
+            for i in range(b*f):
+                if np.random.rand() > 0.25:
+                    selected_leg_bones = rear_leg_bones[0] if np.random.rand() > 0.5 else rear_leg_bones[1]
+                    articulation_angles[i, selected_leg_bones, 0] = -articulation_angles[i, selected_leg_bones, 0]
+            articulation_angles = rearrange(articulation_angles, "(b f) k c -> b f k c", b=b, f=f)
 
         verts_articulated, aux = skinning(
             verts, bones, self.kinematic_tree, articulation_angles, output_posed_bones=True,
@@ -437,6 +586,21 @@ class InstancePredictorBase(nn.Module):
         articulated_shape = mesh.make_mesh(
             verts_articulated, shape.t_pos_idx, v_tex, shape.t_tex_idx, shape.material
         )
+        if kwargs.get("articulation_gt") is not None:  # Render gt shape for sanity check
+            verts_articulated_gt, aux_gt = skinning(
+                verts, bones, self.kinematic_tree, kwargs.get("articulation_gt"), output_posed_bones=True,
+                temperature=self.cfg_articulation.skinning_temperature
+            )
+            verts_articulated_gt = verts_articulated_gt.view(batch_size * num_frames, *verts_articulated_gt.shape[2:])
+            v_tex = shape.v_tex
+            if len(v_tex) != len(verts_articulated_gt):
+                v_tex = v_tex.repeat(len(verts_articulated_gt), 1, 1)
+            articulated_shape_gt = mesh.make_mesh(
+                verts_articulated_gt, shape.t_pos_idx, v_tex, shape.t_tex_idx, shape.material
+            )
+            self.articulated_shape_gt = articulated_shape_gt
+            for k, v in aux_gt.items():
+                aux[f"{k}_gt"] = v
         return articulated_shape, articulation_angles, aux
     
     def get_camera_extrinsics_from_pose(self, pose, znear=0.1, zfar=1000., offset_extra=None):
@@ -504,7 +668,7 @@ class InstancePredictorBase(nn.Module):
         shape = prior_shape
         texture = self.netTexture
 
-        poses_raw = self.forward_pose(patch_out, patch_key)
+        poses_raw = self.forward_pose(patch_out, patch_key, frame_ids=kwargs.get('frame_ids'))
         assert self.cfg_pose.rot_rep in ['quadlookat', 'octlookat'], "modify the forward process to support other rotation representations"
         pose_raw, pose, multi_hypothesis_aux = self.sample_pose_hypothesis_from_quad_predictions(
             poses_raw, total_iter, rot_temp_scalar=self.cfg_pose.rot_temp_scalar, num_hypos=self.num_pose_hypos,
@@ -516,11 +680,16 @@ class InstancePredictorBase(nn.Module):
         deformation = None
         if self.enable_deform and in_range(total_iter, self.cfg_deform.deform_iter_range):
             shape, deformation = self.forward_deformation(shape, feat_key, batch_size=batch_size, num_frames=num_frames)
-        
+        else:  # Dummy operations for accelerator ddp
+            if hasattr(self, "netDeform"):
+                shape.v_pos += sum([p.sum() * 0 for p in self.netDeform.parameters()])
+            shape.v_pos += sum([p.sum() * 0 for p in self.netEncoder.parameters()])
         arti_params, articulation_aux = None, {}
         if self.enable_articulation and in_range(total_iter, self.cfg_articulation.articulation_iter_range):
-            shape, arti_params, articulation_aux = self.forward_articulation(shape, feat_key, patch_key, mvp, w2c, batch_size, num_frames, epoch, total_iter)
-        
+            shape, arti_params, articulation_aux = self.forward_articulation(shape, feat_key, patch_key, mvp, w2c, batch_size, num_frames, epoch, total_iter, is_training=is_training, frame_ids=kwargs.get('frame_ids'))
+        else:  # Dummy operations for accelerator ddp
+            shape.v_pos += sum([p.sum() * 0 for p in self.netArticulation.parameters()])
+
         light = self.netLight if self.enable_lighting else None
 
         aux = multi_hypothesis_aux

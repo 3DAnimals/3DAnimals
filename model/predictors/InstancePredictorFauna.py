@@ -212,7 +212,7 @@ class InstancePredictorFauna(InstancePredictorBase):
         
         return articulation_angles
     
-    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter):
+    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter, **kwargs):
         verts = shape.v_pos
         if len(verts) == batch_size * num_frames:
             verts = verts.view(batch_size, num_frames, *verts.shape[1:])  # BxFxNx3
@@ -246,8 +246,8 @@ class InstancePredictorFauna(InstancePredictorBase):
         )
         return articulated_shape, articulation_angles, aux
     
-    def forward(self, images=None, prior_shape=None, epoch=None, total_iter=None, is_training=True):
+    def forward(self, images=None, prior_shape=None, epoch=None, total_iter=None, is_training=True, **kwargs):
         if total_iter >= self.cfg_additional.nozeroy_start:
             self.cfg_pose.lookat_zeroy = False
-        shape, pose_raw, pose, mvp, w2c, campos, texture, feat_out, deformation, arti_params, light, aux = super().forward(images, prior_shape, epoch, total_iter, is_training)
+        shape, pose_raw, pose, mvp, w2c, campos, texture, feat_out, deformation, arti_params, light, aux = super().forward(images, prior_shape, epoch, total_iter, is_training, **kwargs)
         return shape, pose_raw, pose, mvp, w2c, campos, texture, feat_out, deformation, arti_params, light, aux

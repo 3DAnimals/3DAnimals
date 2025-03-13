@@ -1,9 +1,12 @@
+import os.path
 import numpy as np
 from PIL import Image
 import cv2
 import torch
 import torchvision.transforms as transforms
 from einops import rearrange
+import json
+from subprocess import run
 
 
 def compute_distance_transform(mask):
@@ -26,10 +29,30 @@ def crop_image(image, boxs, size):
 
 
 def box_loader(fpath):
-    box = np.loadtxt(fpath, 'str')
-    box[0] = box[0].split('_')[0]
-    box = box[:8]
-    return box.astype(np.float32)
+    try:
+        box = np.loadtxt(fpath, 'str')
+        box[0] = box[0].split('_')[0]
+        box = box[:8]
+        box = box.astype(np.float32)
+    except FileNotFoundError:
+        # Default box that will result in all pixels being valid
+        box = np.array([0, 100, 100, 512, 512, 1920, 1080, 0], dtype=np.float32)
+    return box
+
+
+def metadata_loader(fpath):
+    try:
+        with open(fpath, 'r') as f:
+            metadata = json.load(f)
+    except FileNotFoundError:
+        # Default metadata that will result in all pixels being valid
+        metadata = {
+            "clip_frame_id": os.path.basename(fpath).split('_')[0],
+            "crop_box_xyxy": [100, 100, 512, 512],
+            "video_frame_height": 1080,
+            "video_frame_width": 1920,
+        }
+    return metadata
 
 
 def read_feat_from_img(path, n_channels):
@@ -49,6 +72,23 @@ def dencode_feat_from_img(img, n_channels):
 def dino_loader(fpath, n_channels):
     dino_map = read_feat_from_img(fpath, n_channels)
     return dino_map
+
+
+def depth_loader(fpath):
+    return Image.open(fpath)
+
+
+def articulation_loader(fpath):
+    if os.path.isfile(fpath):
+        data = np.loadtxt(fpath, dtype=float)
+        return torch.from_numpy(data).float(), True
+    else:
+        return torch.zeros((20,3)).float(), False
+
+
+def keypoint_loader(fpath):
+    data = np.loadtxt(fpath, dtype=float)
+    return torch.from_numpy(data).float()
 
 
 def get_valid_mask(boxs, image_size):
@@ -73,3 +113,19 @@ def horizontal_flip_box(box):
 
 def none_to_nan(x):
     return torch.FloatTensor([float('nan')]) if x is None else x
+
+
+def copy_data_to_local(data_dir, local_dir):
+    assert local_dir is not None
+    local_data_dir = os.path.join(local_dir, data_dir.lstrip('/'))
+    try:
+        os.makedirs(local_data_dir, exist_ok=True)
+    except PermissionError:
+        local_data_dir = local_data_dir.replace("/scr-ssd/", "/scr/")
+        os.makedirs(local_data_dir, exist_ok=True)
+    src_dir = data_dir.rstrip('/') + '/'
+    dst_dir = local_data_dir.rstrip('/')
+    command = ["rsync", "-azL", "--delete", str(src_dir), str(dst_dir)]
+    print(f"Copying data from {src_dir} to {dst_dir}")
+    run(command, check=True)
+    return local_data_dir

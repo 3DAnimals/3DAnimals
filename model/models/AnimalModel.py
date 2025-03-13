@@ -3,11 +3,14 @@ from typing import List, Optional, Dict
 from types import SimpleNamespace
 import numpy as np
 import pytorch3d
+import cv2
 import torch
 import torch.nn as nn
 import nvdiffrast.torch as dr
 import matplotlib.pyplot as plt
-from einops import rearrange
+from einops import rearrange, repeat
+from torch.nn import functional as F
+from scipy.spatial import cKDTree
 from model.utils import misc
 from model.utils.smooth_loss import SmoothLoss
 from model.dataloaders import DataLoaderConfig
@@ -51,6 +54,9 @@ class LossConfig:
     arti_reg_loss_iter_range: List[int] = field(default_factory=lambda: [60000, float("inf")])
     arti_reg_loss_weight: float = 0.1
     deform_reg_loss_weight: float = 10.
+    arti_recon_loss_weight: float = 0
+    prior_normal_reg_loss_weight: float = 0
+    instance_normal_reg_loss_weight: float = 0
 
     smooth_type: str = "dislocation"
     loss_type: str = "l2"
@@ -98,18 +104,28 @@ class AnimalModel:
         if self.cfg_optim_instance.use_scheduler:
             self.make_scheduler_instance = lambda optim: torch.optim.lr_scheduler.MultiStepLR(optim, milestones=self.cfg_optim_instance.scheduler_milestone, gamma=self.cfg_optim_instance.scheduler_gamma)
 
-        self.glctx = dr.RasterizeGLContext()
+        self.glctx = None
         self.device = None
+        self.accelerator = None
         self.mixed_precision = False
         self.total_loss = 0.
 
         self.smooth_loss_fn = SmoothLoss(
             frame_dim=1, smooth_type=self.cfg_loss.smooth_type, loss_type=self.cfg_loss.loss_type
         )
+        print("Loss weights:")
+        for key, value in vars(self.cfg_loss).items():
+            print(f"\t{key}={value}")
+
+    def get_predictor(self, name):
+        predictor = getattr(self, name)
+        if isinstance(predictor, torch.nn.parallel.DistributedDataParallel):
+            return predictor.module
+        return predictor
 
     def load_model_state(self, cp):
-        base_missing, base_unexpected = self.netBase.load_state_dict(cp["netBase"], strict=False)
-        instance_missing, instance_unexpected = self.netInstance.load_state_dict(cp["netInstance"], strict=False)
+        base_missing, base_unexpected = self.get_predictor("netBase").load_state_dict(cp["netBase"], strict=False)
+        instance_missing, instance_unexpected = self.get_predictor("netInstance").load_state_dict(cp["netInstance"], strict=False)
         if base_missing: print(f"Missing keys in netBase:\n{base_missing}")
         if base_unexpected: print(f"Unexpected keys in netBase:\n{base_unexpected}")
         if instance_missing: print(f"Missing keys in netInstance:\n{instance_missing}")
@@ -124,8 +140,10 @@ class AnimalModel:
             self.schedulerInstance.load_state_dict(cp["schedulerInstance"])
 
     def get_model_state(self):
-        state = {"netBase": self.netBase.state_dict(),
-                 "netInstance": self.netInstance.state_dict()}
+        state = {
+            "netBase": self.accelerator.unwrap_model(self.netBase).state_dict(),
+            "netInstance": self.accelerator.unwrap_model(self.netInstance).state_dict()
+        }
         return state
 
     def get_optimizer_state(self):
@@ -139,21 +157,30 @@ class AnimalModel:
 
     def to(self, device):
         self.device = device
-        self.netBase.to(device)
-        self.netInstance.to(device)
+        self.get_predictor("netBase").to(device)
+        self.get_predictor("netInstance").to(device)
+        try:
+            self.get_predictor("netBase").netShape.verts = self.get_predictor("netBase").netShape.verts.to(device)
+            self.get_predictor("netBase").netShape.indices = self.get_predictor("netBase").netShape.indices.to(device)
+        except:
+            pass
 
     def set_train(self):
-        self.netBase.train()
-        self.netInstance.train()
+        self.get_predictor("netBase").train()
+        self.get_predictor("netInstance").train()
+
+    def set_train_post_load(self):
+        # perform any post-load operations, i.e copy weights between networks
+        pass
 
     def set_eval(self):
-        self.netBase.eval()
-        self.netInstance.eval()
+        self.get_predictor("netBase").eval()
+        self.get_predictor("netInstance").eval()
 
     def reset_optimizers(self):
         print("Resetting optimizers...")
-        self.optimizerBase = get_optimizer(self.netBase, lr=self.cfg_optim_base.lr, weight_decay=self.cfg_optim_base.weight_decay)
-        self.optimizerInstance = get_optimizer(self.netInstance, self.cfg_optim_instance.lr, weight_decay=self.cfg_optim_instance.weight_decay)
+        self.optimizerBase = get_optimizer(self.get_predictor("netBase"), lr=self.cfg_optim_base.lr, weight_decay=self.cfg_optim_base.weight_decay)
+        self.optimizerInstance = get_optimizer(self.get_predictor("netInstance"), self.cfg_optim_instance.lr, weight_decay=self.cfg_optim_instance.weight_decay)
         if self.cfg_optim_base.use_scheduler:
             self.schedulerBase = self.make_scheduler_base(self.optimizerBase)
         if self.cfg_optim_instance.use_scheduler:
@@ -163,7 +190,8 @@ class AnimalModel:
         self.optimizerInstance.zero_grad()
         self.optimizerBase.zero_grad()
         if self.mixed_precision and self.scaler:
-            self.scaler.scale(self.total_loss).backward()
+            self.scaler.scale(self.total_loss)
+            self.accelerator.backward(self.total_loss)
             # Step optimizer if it is used, Unused optimizers will raise assertion error when unscaling
             try:
                 self.scaler.step(self.optimizerInstance)
@@ -175,7 +203,7 @@ class AnimalModel:
                 pass
             self.scaler.update()
         else:
-            self.total_loss.backward()
+            self.accelerator.backward(self.total_loss)
             self.optimizerInstance.step()
             self.optimizerBase.step()
         self.total_loss = 0.
@@ -204,6 +232,8 @@ class AnimalModel:
         else:
             raise NotImplementedError
 
+        if self.glctx is None:
+            self.glctx = dr.RasterizeGLContext()
         rendered = render.render_mesh(
             self.glctx,
             shape,
@@ -276,17 +306,29 @@ class AnimalModel:
                 losses[k] = v.mean()
         return losses
 
-    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None):
+    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None, prior_shape=None, **kwargs):
         losses = {}
         aux = {}
-        losses.update(self.netBase.netShape.get_sdf_reg_loss())
+        losses.update(self.get_predictor("netBase").netShape.get_sdf_reg_loss())
         if arti_params is not None:
             losses['arti_reg_loss'] = (arti_params ** 2).mean()  # R_art
         if deformation is not None:
             losses['deform_reg_loss'] = (deformation ** 2).mean()  # R_def
+        if prior_shape is not None:
+            adj_verts = torch.cat([prior_shape.t_nrm_idx[:,:,0:2], prior_shape.t_nrm_idx[:,:,1:3]], dim=1)  # (1, 2*n_faces, 2)
+            adj_vert_x_coords = torch.mean(prior_shape.v_pos[:, adj_verts].squeeze(0), dim=-2)[:, :,1]  # (1, 2*n_faces)
+            adj_norms = prior_shape.v_nrm[:, adj_verts].squeeze(0)  # (1, 2*n_faces, 2, 3)
+            adj_norm_diffs = 1 - torch.sum(adj_norms[:,:,0,:] * adj_norms[:,:,1,:], dim=2)
+            xmin = adj_vert_x_coords.min(dim=-1).values
+            xmax = adj_vert_x_coords.max(dim=-1).values
+            xmid = (xmin + xmax) / 2
+            radius = (xmax - xmin) / 2
+            weights = torch.sqrt(torch.clamp(radius**2 - (xmid - adj_vert_x_coords)**2, min=1e-8)) / radius
+            weights = torch.ones_like(weights)
+            losses['prior_normal_reg_loss'] = torch.sum(adj_norm_diffs * weights) / torch.sum(weights)  # Newly added prior surface normal regularization
 
-        # Smooth losses
-        if self.dataset.data_type == "sequence" and self.dataset.num_frames > 1:
+        # Motion regularizers on sequence data
+        if "sequence" in self.dataset.data_type and self.dataset.num_frames > 1:
             b, f = arti_params.shape[:2]
             if self.cfg_loss.deform_smooth_loss_weight > 0 and deformation is not None:
                 losses["deform_smooth_loss"] = self.smooth_loss_fn(expandBF(deformation, b, f))
@@ -335,17 +377,18 @@ class AnimalModel:
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res_coarse
         else:
             grid_res = self.cfg_predictor_base.cfg_shape.grid_res
-        if self.netBase.netShape.grid_res != grid_res:
-            self.netBase.netShape.load_tets(grid_res)
+        if self.get_predictor("netBase").netShape.grid_res != grid_res:
+            self.get_predictor("netBase").netShape.load_tets(grid_res)
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 prior_shape, dino_net = self.netBase(total_iter=total_iter, is_training=is_training)
         else:
             prior_shape, dino_net = self.netBase(total_iter=total_iter, is_training=is_training)
+        prior_shape.v_pos += sum([p.sum() * 0 for p in dino_net.parameters()])  # Dummy operation for ddp
 
         ## predict instance specific parameters
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 shape, pose_raw, pose, mvp, w2c, campos, texture, im_features, deformation, arti_params, light, forward_aux = self.netInstance(input_image, prior_shape, epoch, total_iter, is_training=is_training)
             pose_raw, pose, mvp, w2c, campos, im_features, arti_params = \
                 map(to_float, [pose_raw, pose, mvp, w2c, campos, im_features, arti_params])
@@ -365,7 +408,7 @@ class AnimalModel:
                 render_modes += ['flow']
             render_mvp, render_w2c, render_campos = (mvp, w2c, campos) if not self.cfg_render.render_default else (self.default_mvp.to(self.device), self.default_w2c.to(self.device), self.default_campos.to(self.device))
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     renders = self.render(
                         render_modes, shape, texture, render_mvp, render_w2c, render_campos, (h, w), im_features=im_features, light=light,
                         prior_shape=prior_shape, dino_net=dino_net, num_frames=num_frames
@@ -389,7 +432,7 @@ class AnimalModel:
 
             ## compute reconstruction losses
             if self.mixed_precision:
-                with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+                with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                     losses = self.compute_reconstruction_losses(
                         image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt,
                         dino_feat_im_pred, background_mode=self.cfg_render.background_mode, reduce=False
@@ -413,9 +456,9 @@ class AnimalModel:
                         logit_loss_target += loss * loss_weight
 
                     ## multiply the loss with probability of the rotation hypothesis (detached)
-                    if self.netInstance.cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
+                    if self.get_predictor("netInstance").cfg_pose.rot_rep in ['quadlookat', 'octlookat']:
                         loss_prob = rot_prob.detach().view(batch_size, num_frames)[:, :loss.shape[1]]  # handle edge case for flow loss with one frame less
-                        loss = loss * loss_prob *self.netInstance.num_pose_hypos
+                        loss = loss * loss_prob * self.get_predictor("netInstance").num_pose_hypos
                     ## only compute flow loss for frames with the same rotation hypothesis
                     if name == 'flow_loss' and num_frames > 1:
                         ri = rot_idx.view(batch_size, num_frames)
@@ -430,15 +473,15 @@ class AnimalModel:
 
         ## regularizers
         if self.mixed_precision:
-            with torch.autocast(device_type=torch.device(self.device).type, dtype=self.mixed_precision):
+            with torch.autocast(device_type=torch.device(self.accelerator.device).type, dtype=self.mixed_precision):
                 regularizers, aux = self.compute_regularizers(
                     arti_params=arti_params, deformation=deformation, pose_raw=pose_raw,
-                    posed_bones=forward_aux.get("posed_bones")
+                    posed_bones=forward_aux.get("posed_bones"), prior_shape=prior_shape
                 )
         else:
             regularizers, aux = self.compute_regularizers(
                 arti_params=arti_params, deformation=deformation, pose_raw=pose_raw,
-                posed_bones=forward_aux.get("posed_bones")
+                posed_bones=forward_aux.get("posed_bones"), prior_shape=prior_shape,
             )
         final_losses.update(regularizers)
         aux_viz.update(aux)
@@ -465,9 +508,9 @@ class AnimalModel:
         metrics = {'loss': total_loss, **final_losses}
 
         log = SimpleNamespace(**locals())
-        if logger is not None and (self.enable_render or not is_training):
+        if self.accelerator.is_main_process and logger is not None and (self.enable_render or not is_training):
             self.log_visuals(log, logger)
-        if save_results:
+        if self.accelerator.is_main_process and save_results:
             self.save_results(log)
         return metrics
 
@@ -475,8 +518,8 @@ class AnimalModel:
         b0 = max(min(log.batch_size, 16//log.num_frames), 1)
         def log_image(name, image):
             logger.add_image(log.logger_prefix+'image/'+name, misc.image_grid(collapseBF(image[:b0,:]).detach().cpu().clamp(0,1)), log.total_iter)
-        def log_video(name, frames):
-            logger.add_video(log.logger_prefix+'animation/'+name, frames.detach().cpu().unsqueeze(0).clamp(0,1), log.total_iter, fps=2)
+        def log_video(name, frames, fps=2):
+            logger.add_video(log.logger_prefix+'animation/'+name, frames.detach().cpu().unsqueeze(0).clamp(0,1), log.total_iter, fps=fps)
 
         log_image('image_gt', log.input_image)
         log_image('image_pred', log.image_pred)
@@ -537,18 +580,18 @@ class AnimalModel:
                 logger.add_histogram(log.logger_prefix+'pose/rot_prob_%d'%i, rp, log.total_iter)
 
         if sdf_feats is None:
-            logger.add_histogram(log.logger_prefix+'sdf', self.netBase.netShape.get_sdf(), log.total_iter)
+            logger.add_histogram(log.logger_prefix+'sdf', self.get_predictor("netBase").netShape.get_sdf(), log.total_iter)
         else:
-            logger.add_histogram(log.logger_prefix+'sdf', self.netBase.netShape.get_sdf(feats=log.class_vector), log.total_iter)
+            logger.add_histogram(log.logger_prefix+'sdf', self.get_predictor("netBase").netShape.get_sdf(feats=log.class_vector), log.total_iter)
         logger.add_histogram(log.logger_prefix+'coordinates', log.shape.v_pos, log.total_iter)
 
         render_modes = ['geo_normal', 'kd', 'shading']
         rendered = self.render(render_modes, log.shape, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
         geo_normal, albedo, shading = map(lambda x: expandBF(x, log.batch_size, log.num_frames), rendered)
-        if hasattr(self.netInstance, "articulated_shape_gt"):
-            rendered_gt = self.render(render_modes, self.netInstance.articulated_shape_gt, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
+        if hasattr(self.get_predictor("netInstance"), "articulated_shape_gt"):
+            rendered_gt = self.render(render_modes, self.get_predictor("netInstance").articulated_shape_gt, log.texture, log.mvp, log.w2c, log.campos, (log.h, log.w), im_features=log.im_features, light=log.light, prior_shape=log.prior_shape)
             geo_normal_gt, albedo_gt, shading_gt = map(lambda x: expandBF(x, log.batch_size, log.num_frames), rendered_gt)
-            del self.netInstance.articulated_shape_gt
+            del self.get_predictor("netInstance").articulated_shape_gt
 
         if log.light is not None:
             param_names = ['dir_x', 'dir_y', 'dir_z', 'int_ambient', 'int_diffuse']
@@ -567,6 +610,7 @@ class AnimalModel:
                 rendered_bone_image_mask = (rendered_bone_image < 1).float()
                 geo_normal_gt = rendered_bone_image_mask * 0.8 * rendered_bone_image + (
                             1 - rendered_bone_image_mask * 0.8) * geo_normal_gt
+                log_image('instance_geo_normal_gt', geo_normal_gt)
 
         ## draw marker on images with randomly sampled pose
         if rot_rep in ['quadlookat', 'octlookat']:
@@ -616,7 +660,7 @@ class AnimalModel:
         feat = log.im_features[:b0] if log.im_features is not None else None
         misc.save_obj(log.save_dir, tmp_shape, save_material=False, feat=feat, suffix="mesh", fnames=fnames)
         misc.save_txt(log.save_dir, log.pose[:b0].detach().cpu().numpy(), suffix='pose', fnames=fnames)
-
+        misc.save_txt(log.save_dir, rearrange(log.arti_params, "b f n c -> (b f) n c").cpu().numpy(), suffix='arti_params', fnames=fnames, delim=' ')
 
     def render_rotation_frames(self, render_mode, mesh, texture, light, resolution, background=None, im_features=None, prior_shape=None, num_frames=36, b=None, text=None):
         if b is None:
@@ -631,12 +675,12 @@ class AnimalModel:
             [0,                    1, 0,                   0],
             [-np.sin(delta_angle), 0, np.cos(delta_angle), 0],
             [0,                    0, 0,                   1],
-        ]).to(self.device).repeat(b, 1, 1)
+        ]).to(self.accelerator.device).repeat(b, 1, 1)
 
         w2c = torch.FloatTensor(np.diag([1., 1., 1., 1]))
         w2c[:3, 3] = torch.FloatTensor([0, 0, -self.cfg_render.cam_pos_z_offset *1.1])
-        w2c = w2c.repeat(b, 1, 1).to(self.device)
-        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.device)
+        w2c = w2c.repeat(b, 1, 1).to(self.accelerator.device)
+        proj = util.perspective(self.cfg_render.fov / 180 * np.pi, 1, n=0.1, f=1000.0).repeat(b, 1, 1).to(self.accelerator.device)
         mvp = torch.bmm(proj, w2c)
         campos = -w2c[:, :3, 3]
 
@@ -656,7 +700,7 @@ class AnimalModel:
             frames = [torch.Tensor(misc.add_text_to_image(f, text)).permute(2, 0, 1) for f in frames]
         return torch.stack(frames, dim=0)  # Shape: (T, C, H, W)
 
-    def render_bones(self, mvp, bones_pred, size=(256, 256)):
+    def render_bones(self, mvp, bones_pred, size=(256, 256), show_legend=False, overlay_img=None):
         bone_world4 = torch.concat([bones_pred, torch.ones_like(bones_pred[..., :1]).to(bones_pred.device)], dim=-1)
         b, f, num_bones = bone_world4.shape[:3]
         bones_clip4 = (bone_world4.view(b, f, num_bones*2, 1, 4) @ mvp.transpose(-1, -2).reshape(b, f, 1, 4, 4)).view(b, f, num_bones, 2, 4)
@@ -671,13 +715,20 @@ class AnimalModel:
                 fig = plt.figure(figsize=(fx, fy), dpi=dpi, frameon=False)
                 ax = plt.Axes(fig, [0., 0., 1., 1.])
                 ax.set_axis_off()
-                for bone in frame_bones_uv:
-                    ax.plot(bone[:, 0], bone[:, 1], marker='o', linewidth=8, markersize=20)
+                fig.add_axes(ax)
+                if overlay_img is not None:
+                    bg_img = overlay_img[b_idx, f_idx].permute(1, 2, 0).cpu().numpy()  # (h, w, 3)
+                    bg_img = np.flipud(bg_img)
+                    ax.imshow(bg_img, extent=(-1, 1, -1, 1), alpha=0.5)  # Adjust extent to match plot coordinates
+                colors = plt.cm.tab20(np.linspace(0, 1, frame_bones_uv.shape[0]))
+                for bone_idx, bone in enumerate(frame_bones_uv):
+                    ax.plot(bone[:, 0], bone[:, 1], marker='o', linewidth=8, markersize=20, color=colors[bone_idx], label=str(bone_idx))
                 ax.set_xlim(-1, 1)
                 ax.set_ylim(-1, 1)
                 ax.invert_yaxis()
+                if show_legend:
+                    ax.legend(loc='upper right', bbox_to_anchor=(1, 1))
                 # Convert to image
-                fig.add_axes(ax)
                 fig.canvas.draw_idle()
                 image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
                 w, h = fig.canvas.get_width_height()
@@ -712,3 +763,98 @@ def to_float(x):
         return x.float()
     except AttributeError:
         return x
+
+
+def find_nearest_mask_coords(coords, mask):
+    """Given a set of coordinates and a binary mask, find the nearest unmasked coordinates for each input coordinate"""
+    b, f, p, _, _ = coords.shape  # (b, f, p, n, 2)
+    device = coords.device
+    coords = rearrange(coords, 'b f p n c -> (b f) (p n) c').cpu().numpy()
+    mask = rearrange(mask, 'b f h w -> (b f) h w').cpu().numpy()
+    nearest_coords_list = []
+    for i in range(b):
+        mask_np = mask[i]
+        mask_y, mask_x = np.where(mask_np == 1)
+        mask_points = np.stack((mask_x, mask_y), axis=-1)
+        query_points = coords[i]
+        if mask_points.size == 0:
+            nearest_coords_list.append(torch.from_numpy(query_points).to(device))
+            continue
+        tree = cKDTree(mask_points)
+        distances, indices = tree.query(query_points, k=1)
+        nearest_mask_coords = mask_points[indices]
+        nearest_coords_list.append(torch.from_numpy(nearest_mask_coords).to(device))
+    nearest_coords = torch.stack(nearest_coords_list, dim=0)
+    nearest_coords = rearrange(nearest_coords, '(b f) (p n) c -> b f p n c', b=b, f=f, p=p, n=2)
+    return nearest_coords
+
+
+def get_distance_threshold_mask(coord_pairs_xy, threshold=20):
+    """Mask pairs of coordinates where the distance between the points is smaller than the threshold"""
+    assert coord_pairs_xy.shape[-2] == 2, "Each pair should contain exactly two points."
+    point1 = coord_pairs_xy[..., 0, :]  # Shape: (b, f, p, 2)
+    point2 = coord_pairs_xy[..., 1, :]  # Shape: (b, f, p, 2)
+    diff = point2 - point1  # Shape: (b, f, p, 2)
+    dist = torch.sqrt(torch.sum(diff ** 2, dim=-1))  # Shape: (b, f, p)
+    mask = dist >= threshold  # Shape: (b, f, p), dtype: torch.bool
+    return mask
+
+
+def disable_articulation_loss(articulation_gt_flag, w2c):
+    if articulation_gt_flag is None:
+        return None
+    b = len(articulation_gt_flag)
+    object_front_normal = repeat(torch.tensor([1., 0., 0.], device=w2c.device), "c -> b c 1", b=b)
+    R_world_to_cam = w2c[:, :3, :3]
+    cam_forward_in_world = R_world_to_cam.transpose(1, 2) @ repeat(torch.tensor([0., 0., 1.], device=w2c.device), "c -> b c 1", b=b)
+    similarity = F.cosine_similarity(cam_forward_in_world, object_front_normal).abs()
+    articulation_gt_flag = articulation_gt_flag * (similarity > 0.25).squeeze()
+    return articulation_gt_flag
+
+
+def disable_keypoint_loss(w2c, b):
+    object_front_normal = repeat(torch.tensor([1., 0., 0.], device=w2c.device), "c -> b c 1", b=b)
+    R_world_to_cam = w2c[:, :3, :3]
+    cam_forward_in_world = R_world_to_cam.transpose(1, 2) @ repeat(torch.tensor([0., 0., 1.], device=w2c.device), "c -> b c 1", b=b)
+    similarity = F.cosine_similarity(cam_forward_in_world, object_front_normal).abs()
+    keypoint_gt_flag = (similarity > 0.25).squeeze()
+    return keypoint_gt_flag
+
+
+def draw_keypoints(image_t, keypoint, gt_flag, circle_color=(0, 0, 255), text_color=(0, 255, 255), radius=3):
+    b, f = image_t.shape[:2]
+    img_size = image_t.shape[-1]
+    image_t = rearrange(image_t, "b f ... -> (b f) ...")
+    keypoint = rearrange((keypoint + 1) / 2 * img_size, "b f ... -> (b f) ...")
+    if gt_flag is None:
+        gt_flag = torch.ones(b*f, device=image_t.device, dtype=torch.bool)
+    elif gt_flag.dim() == 2:
+        gt_flag = rearrange(gt_flag, "b f -> (b f)")
+    out_list = []
+    for img, k, flag in zip(image_t, keypoint, gt_flag):
+        if flag:
+            img_np = (img.clone() * 255).permute(1, 2, 0).clamp(0, 255).contiguous().cpu().numpy().astype(np.uint8)
+            for i, (x, y) in enumerate(k[:, :2]):
+                x, y = int(x.item()), int(y.item())
+                cv2.circle(
+                    img_np,
+                    center=(x, y),
+                    radius=radius,
+                    color=circle_color,
+                    thickness=-1  # -1 => filled circle
+                )
+                cv2.putText(
+                    img_np,
+                    text=str(i),
+                    org=(x + radius + 1, y - radius - 1),
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                    fontScale=0.5,
+                    color=text_color,
+                    thickness=1,
+                    lineType=cv2.LINE_AA
+                )
+            out_list.append(torch.from_numpy(img_np).permute(2, 0, 1) / 255)
+        else:
+            out_list.append(img.cpu())
+    out_t = rearrange(torch.stack(out_list), "(b f) ... -> b f ...", b=b, f=f)
+    return out_t

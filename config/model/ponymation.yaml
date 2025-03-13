@@ -118,6 +118,8 @@ cfg_predictor_instance:
     constrain_legs: true
     output_multiplier: 0.1
     extra_constraints: true
+    enable_refine: false
+    use_fauna_constraints: false
 
   enable_lighting: true
   cfg_light:

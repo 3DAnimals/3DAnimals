@@ -13,8 +13,8 @@ defaults:
 dataset:
   in_image_size: 256
   out_image_size: 256
-  batch_size: 4
-  num_frames: 5
+  batch_size: 1
+  num_frames: 10
   train_data_dir: data/ponymation/horse/train
   val_data_dir: data/ponymation/horse/test
   random_shuffle_samples_train: true
@@ -48,5 +48,5 @@ checkpoint_dir: results/ponymation/horse
 checkpoint_path: results/magicpony/pretrained_horse/pretrained_horse.pth
 resume: true  # Start from a MagicPony ckpt
 load_optim: false
-logger_type: tensorboard
+logger_type: wandb
 mixed_precision: false

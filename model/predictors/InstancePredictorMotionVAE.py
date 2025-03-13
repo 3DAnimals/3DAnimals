@@ -59,7 +59,7 @@ class InstancePredictorMotionVAE(InstancePredictorBase):
         shape = shape.deform(deformation)
         return shape, deformation
 
-    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter):
+    def forward_articulation(self, shape, feat, patch_feat, mvp, w2c, batch_size, num_frames, epoch, total_iter, **kwargs):
         """
         Forward propagation of articulation. For each bone, the network takes:
         1) the 3D location of the bone;

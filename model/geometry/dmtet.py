@@ -21,7 +21,8 @@ from ..networks import CoordMLP, CoordMLP_Mod
 ###############################################################################
 
 class DMTet:
-    def __init__(self):
+    def __init__(self, device=None):
+        self.device = device if device is not None else "cuda"
         self.triangle_table = torch.tensor([
                 [-1, -1, -1, -1, -1, -1],
                 [ 1,  0,  2, -1, -1, -1],
@@ -39,14 +40,21 @@ class DMTet:
                 [ 3,  0,  4, -1, -1, -1],
                 [ 2,  0,  1, -1, -1, -1],
                 [-1, -1, -1, -1, -1, -1]
-                ], dtype=torch.long, device='cuda')
+                ], dtype=torch.long, device=device)
 
-        self.num_triangles_table = torch.tensor([0,1,1,2,1,2,2,1,1,2,2,1,2,1,1,0], dtype=torch.long, device='cuda')
-        self.base_tet_edges = torch.tensor([0,1,0,2,0,3,1,2,1,3,2,3], dtype=torch.long, device='cuda')
+        self.num_triangles_table = torch.tensor([0,1,1,2,1,2,2,1,1,2,2,1,2,1,1,0], dtype=torch.long, device=device)
+        self.base_tet_edges = torch.tensor([0,1,0,2,0,3,1,2,1,3,2,3], dtype=torch.long, device=device)
 
     ###############################################################################
     # Utility functions
     ###############################################################################
+
+    def to(self, device):
+        self.triangle_table = self.triangle_table.to(device)
+        self.num_triangles_table = self.num_triangles_table.to(device)
+        self.base_tet_edges = self.base_tet_edges.to(device)
+        self.device = device
+        return self
 
     def sort_edges(self, edges_ex2):
         with torch.no_grad():
@@ -61,8 +69,8 @@ class DMTet:
     def map_uv(self, faces, face_gidx, max_idx):
         N = int(np.ceil(np.sqrt((max_idx+1)//2)))
         tex_y, tex_x = torch.meshgrid(
-            torch.linspace(0, 1 - (1 / N), N, dtype=torch.float32, device="cuda"),
-            torch.linspace(0, 1 - (1 / N), N, dtype=torch.float32, device="cuda"),
+            torch.linspace(0, 1 - (1 / N), N, dtype=torch.float32, device=self.device),
+            torch.linspace(0, 1 - (1 / N), N, dtype=torch.float32, device=self.device),
             indexing='ij'
         )
 
@@ -108,8 +116,8 @@ class DMTet:
             
             unique_edges = unique_edges.long()
             mask_edges = occ_n[unique_edges.reshape(-1)].reshape(-1,2).sum(-1) == 1
-            mapping = torch.ones((unique_edges.shape[0]), dtype=torch.long, device="cuda") * -1
-            mapping[mask_edges] = torch.arange(mask_edges.sum(), dtype=torch.long,device="cuda")
+            mapping = torch.ones((unique_edges.shape[0]), dtype=torch.long, device=self.device) * -1
+            mapping[mask_edges] = torch.arange(mask_edges.sum(), dtype=torch.long,device=self.device)
             idx_map = mapping[idx_map] # map edges to verts
 
             interp_v = unique_edges[mask_edges]
@@ -124,7 +132,7 @@ class DMTet:
 
         idx_map = idx_map.reshape(-1,6)
 
-        v_id = torch.pow(2, torch.arange(4, dtype=torch.long, device="cuda"))
+        v_id = torch.pow(2, torch.arange(4, dtype=torch.long, device=self.device))
         tetindex = (occ_fx4[valid_tets] * v_id.unsqueeze(0)).sum(-1)
         num_triangles = self.num_triangles_table[tetindex]
 
@@ -136,7 +144,7 @@ class DMTet:
 
         # Get global face index (static, does not depend on topology)
         num_tets = tet_fx4.shape[0]
-        tet_gidx = torch.arange(num_tets, dtype=torch.long, device="cuda")[valid_tets]
+        tet_gidx = torch.arange(num_tets, dtype=torch.long, device=self.device)[valid_tets]
         face_gidx = torch.cat((
             tet_gidx[num_triangles == 1]*2,
             torch.stack((tet_gidx[num_triangles == 2]*2, tet_gidx[num_triangles == 2]*2 + 1), dim=-1).view(-1)
@@ -296,6 +304,7 @@ class DMTetGeometry(torch.nn.Module):
             v_deformed = v_deformed + jitter
 
         self.current_sdf = self.get_sdf(v_deformed, total_iter=total_iter, feats=feats)
+        self.marching_tets = self.marching_tets.to(v_deformed.device)
         verts, faces, uvs, uv_idx = self.marching_tets(v_deformed, self.current_sdf, self.indices)
         self.mesh_verts = verts
         return mesh.make_mesh(verts[None], faces[None], uvs[None], uv_idx[None], material)

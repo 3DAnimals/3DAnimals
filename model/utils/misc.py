@@ -66,7 +66,10 @@ def clean_checkpoint(checkpoint_dir, keep_num=2):
         if len(names) > keep_num:
             for name in names[:-keep_num]:
                 print(f"Deleting obslete checkpoint file {name}")
-                os.remove(name)
+                try:
+                    os.remove(name)
+                except FileNotFoundError:
+                    pass
 
 
 def archive_code(arc_path, filetypes=['.py']):
@@ -184,13 +187,6 @@ def save_obj(out_fold, meshes=None, save_material=True, feat=None, prefix='', su
         write_obj(out_fold_i, prefix+fname+suffix, meshes, i, save_material=save_material, feat=feat, resolution=resolution)
 
 
-def save_arti_params(out_fold, data, prefix='', suffix='', fnames=None, ext='.txt', fmt='%.6f'):
-    fnames = np.array(fnames).reshape(data.shape[:2])
-    for i, fname in enumerate(fnames[:, 0]):
-        frame_out_fold = os.path.join(out_fold, f"{fname}_arti_params")
-        save_txt(frame_out_fold, data[i], prefix=prefix, suffix=suffix, ext=ext, fmt=fmt, delim=' ')
-
-
 def compute_sc_inv_err(d_pred, d_gt, mask=None):
     b = d_pred.size(0)
     diff = d_pred - d_gt
@@ -230,10 +226,10 @@ def video_grid(tensor, nrow=None):
 
 def in_range(x, range, default_indicator=None):
     range_min, range_max = range
-    if range_max is None or range_max == "inf":
-        range_max = float("inf")
-    if range_min is None or range_min == "-inf":
-        range_max = float("-inf")
+    if isinstance(range_max, str):
+        range_max = float(range_max)
+    if isinstance(range_min, str):
+        range_min = float(range_min)
     min_check = (x >= range_min)
     max_check = (x < range_max)
     if default_indicator is not None:
@@ -273,3 +269,20 @@ def add_text_to_image(img, text, pos=(12, 12), color=(1, 1, 1), font_scale=0.5, 
         img = np.repeat(img, 3, 2)
     img = cv2.putText(np.ascontiguousarray(img), text, pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
     return img
+
+
+def normalize_depth(depth, mask=None):
+    # Normalize depth values to [0, 1] range based on the minimum and maximum depth values in masked regions
+    # Set all background to 0
+    if mask is not None:
+        depth_for_min = torch.where(mask.bool(), depth, torch.full_like(depth, float('inf')))
+        depth_for_max = torch.where(mask.bool(), depth, torch.full_like(depth, -float('inf')))
+    else:
+        depth_for_min = depth
+        depth_for_max = depth
+    depth_min = depth_for_min.amin(dim=(-1, -2), keepdim=True)
+    depth_max = depth_for_max.amax(dim=(-1, -2), keepdim=True)
+    normalized_depth = (depth - depth_min) / (depth_max - depth_min)
+    if mask is not None:
+        normalized_depth = torch.where(mask.bool(), normalized_depth, torch.zeros_like(normalized_depth))
+    return normalized_depth
