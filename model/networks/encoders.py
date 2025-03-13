@@ -1,10 +1,11 @@
-__all__ = ['Encoder', 'Encoder32', 'VGGEncoder', 'ResnetEncoder', 'ViTEncoder']
+__all__ = ['Encoder', 'Encoder32', 'VGGEncoder', 'ResnetEncoder', 'ViTEncoder', 'ResnetDepthEncoder']
 
 from typing import List
 import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torchvision import transforms
 from .util import get_activation
 
 
@@ -113,6 +114,35 @@ class ResnetEncoder(nn.Module):
 
     def forward(self, x):
         return self.final_linear(self.resnet(x))
+
+
+class ResnetDepthEncoder(nn.Module):
+    def __init__(self, pretrained=True):
+        super().__init__()
+        self.resnet = models.resnet18(pretrained=pretrained)
+        self.model = nn.Sequential(*list(self.resnet.children())[:-1])
+        self.layer_idx_dict = {"layer1": 4, "layer2": 5, "layer3": 6, "layer4": 7}
+        self.model.eval()
+        self.transform = transforms.Compose([
+            transforms.Lambda(lambda x: x.float()),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        self.features = None
+        if pretrained:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+    def hook_fn(self, module, input, output):
+        self.features = output
+
+    def forward(self, x):
+        # Input is 3 channel depth image
+        self.features = None
+        hook_handle = self.model[self.layer_idx_dict["layer2"]].register_forward_hook(self.hook_fn)
+        global_feat = self.model(self.transform(x)).squeeze(-1).squeeze(-1)
+        local_feat = self.features
+        hook_handle.remove()
+        return global_feat, local_feat
 
 
 class ViTEncoder(nn.Module):

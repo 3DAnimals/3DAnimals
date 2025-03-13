@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from einops import repeat
 from dataclasses import dataclass
+from itertools import chain
 from .AnimalModel import AnimalModel, AnimalModelConfig
 from ..geometry.skinning import euler_angles_to_matrix
 from ..utils import misc
@@ -25,9 +26,8 @@ class Ponymation(AnimalModel):
         self.get_default_pose()
 
     def get_default_pose(self):
-        
         pose_canon = torch.concat([torch.eye(3), torch.zeros(1, 3)], dim=0).view(-1)[None].to(self.device)
-        mvp_canon, w2c_canon, campos_canon = self.netInstance.get_camera_extrinsics_from_pose(pose_canon, offset_extra=self.cfg_render.offset_extra)
+        mvp_canon, w2c_canon, campos_canon = self.get_predictor("netInstance").get_camera_extrinsics_from_pose(pose_canon, offset_extra=self.cfg_render.offset_extra)
         viewpoint_arti = torch.FloatTensor([0, -120, 0]) / 180 * np.pi
         mtx = torch.eye(4).to(self.device)
         mtx[:3, :3] = euler_angles_to_matrix(viewpoint_arti, "XYZ")
@@ -38,40 +38,47 @@ class Ponymation(AnimalModel):
 
     def set_eval(self):
         super().set_eval()
-        self.netInstance.forward_train = self.netInstance.forward
-        if self.netInstance.enable_motion_vae:
-            self.netInstance.forward = self.netInstance.generate
+        self.get_predictor("netInstance").forward_train = self.get_predictor("netInstance").forward
+        if self.get_predictor("netInstance").enable_motion_vae:
+            self.get_predictor("netInstance").forward = self.get_predictor("netInstance").generate
 
     def set_train(self):
         super().set_train()
-        if self.netInstance.forward == self.netInstance.generate:
-            assert hasattr(self.netInstance, "forward_train")
-            self.netInstance.forward = self.netInstance.forward_train
+        if self.get_predictor("netInstance").forward == self.get_predictor("netInstance").generate:
+            assert hasattr(self.get_predictor("netInstance"), "forward_train")
+            self.get_predictor("netInstance").forward = self.get_predictor("netInstance").forward_train
+        for param in chain(self.netBase.parameters(), self.get_predictor("netInstance").parameters()):
+            param.requires_grad = False
+        for param in self.get_predictor("netInstance").netArticulation.parameters():
+            param.requires_grad = True
 
     def load_model_state(self, cp):
         super().load_model_state(cp)
-        if self.netInstance.enable_motion_vae:
+        if self.get_predictor("netInstance").enable_motion_vae:
             for param in self.netBase.parameters():
                 param.requires_grad = False
-            for param in self.netInstance.parameters():
+            for param in self.get_predictor("netInstance").parameters():
                 param.requires_grad = False
-            for param in self.netInstance.netVAE.parameters():
+            for param in self.get_predictor("netInstance").netVAE.parameters():
                 param.requires_grad = True
 
-    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None):
-        losses, aux = super().compute_regularizers(arti_params, deformation, pose_raw, posed_bones)
-        if self.cfg_loss.arti_recon_loss_weight > 0 and hasattr(self.netInstance, "articulation_angles_gt"):
-            assert not self.netInstance.articulation_angles_gt.requires_grad
+    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None, prior_shape=None, **kwargs):
+        losses, aux = super().compute_regularizers(
+            arti_params=arti_params, deformation=deformation, pose_raw=pose_raw, posed_bones=posed_bones,
+            prior_shape=prior_shape, **kwargs
+        )
+        if self.cfg_loss.arti_recon_loss_weight > 0 and hasattr(self.get_predictor("netInstance"), "articulation_angles_gt"):
+            assert not self.get_predictor("netInstance").articulation_angles_gt.requires_grad
             losses["arti_recon_loss"] = self.arti_recon_loss_fn(  # L_teacher
-                self.netInstance.articulation_angles_pred, self.netInstance.articulation_angles_gt
+                self.get_predictor("netInstance").articulation_angles_pred, self.get_predictor("netInstance").articulation_angles_gt
             )
         if (
             self.cfg_loss.kld_loss_weight > 0
-            and hasattr(self.netInstance, "log_var_vae") and hasattr(self.netInstance, "mu_vae")
+            and hasattr(self.get_predictor("netInstance"), "log_var_vae") and hasattr(self.get_predictor("netInstance"), "mu_vae")
         ):
             losses["kld_loss"] = -0.5 * torch.mean(  # L_KL
                 torch.sum(
-                    1 + self.netInstance.log_var_vae - self.netInstance.mu_vae ** 2 - self.netInstance.log_var_vae.exp(),
+                    1 + self.get_predictor("netInstance").log_var_vae - self.get_predictor("netInstance").mu_vae ** 2 - self.get_predictor("netInstance").log_var_vae.exp(),
                     dim=1
                 )
             )
@@ -81,7 +88,7 @@ class Ponymation(AnimalModel):
         self, image_pred, image_gt, mask_pred, mask_gt, mask_dt, mask_valid, flow_pred, flow_gt, dino_feat_im_gt,
         dino_feat_im_pred, background_mode='none', reduce=False
     ):  # Disable reconstruction loss in motion vae stage
-        if self.netInstance.enable_motion_vae:
+        if self.get_predictor("netInstance").enable_motion_vae:
             return None
         else:
             return super().compute_reconstruction_losses(
@@ -89,14 +96,14 @@ class Ponymation(AnimalModel):
                 dino_feat_im_pred, background_mode, reduce
             )
 
-    def log_visuals(self, log, logger):
+    def log_visuals(self, log, logger, **kwargs):
         log = super().log_visuals(log, logger)
-        def log_video(name, frames):
-            logger.add_video(log.logger_prefix+'animation/'+name, frames.detach().cpu().unsqueeze(0).clamp(0,1), log.total_iter, fps=2)
+        def log_video(name, frames, fps=10):
+            logger.add_video(log.logger_prefix+'animation/'+name, frames.detach().cpu().unsqueeze(0).clamp(0,1), log.total_iter, fps=fps)
         if log.num_frames > 1:
             log_video("sequence_image_gt", log.input_image[0])
             log_video("sequence_mask_gt", repeat(log.mask_gt[0], "f h w -> f c h w", c=3))
-            if self.netInstance.enable_motion_vae and not log.is_training:
+            if self.get_predictor("netInstance").enable_motion_vae and not log.is_training:
                 suffix = "gen"
             else:
                 suffix = "pred"

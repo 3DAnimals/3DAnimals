@@ -1,21 +1,26 @@
+import os.path
+
 import wandb
 import numpy as np
 from einops import rearrange
 from torchvision.transforms.functional import to_pil_image
 from dataclasses import is_dataclass, asdict
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, ListConfig
+from shutil import rmtree
 
 
 class WandbWriter:
-    def __init__(self, project, config=None, **kwargs):
-        if OmegaConf.is_config(config):
-            config = OmegaConf.to_container(config)
-        elif is_dataclass(config):
-            config = asdict(config)
-        assert isinstance(config, dict)
-        self.run = (
-            wandb.init(project=project, config=config, **kwargs) if not wandb.run else wandb.run
-        )
+    def __init__(self, project, config=None, local_dir=None, **kwargs):
+        config = to_dict(config)
+        self.local_dir = local_dir
+        if self.local_dir:
+            self.run = (
+                wandb.init(project=project, config=to_dict(config), dir=local_dir, **kwargs) if not wandb.run else wandb.run
+            )
+        else:
+            self.run = (
+                wandb.init(project=project, config=to_dict(config), **kwargs) if not wandb.run else wandb.run
+            )
 
     def watch(self, models, log_freq, log="all", log_graph=False):
         self.run.watch(models, log=log, log_freq=log_freq, log_graph=log_graph)
@@ -42,3 +47,18 @@ class WandbWriter:
 
     def finish(self):
         self.run.finish()
+        if self.local_dir:
+            rmtree(self.local_dir, ignore_errors=True)
+
+
+def to_dict(config):
+    """Convert Omega Conf or dataclass to python dict recursively for wandb logging"""
+    if is_dataclass(config):
+        return {key: to_dict(value) for key, value in asdict(config).items()}
+    elif isinstance(config, (dict, DictConfig)):
+        return {key: to_dict(value) for key, value in config.items()}
+    elif isinstance(config, (ListConfig, list)):
+        return [to_dict(item) for item in config]
+    if config is not None:
+        assert isinstance(config, (int, float, str, bool, dict)), f"Unsupported type: {config}, {type(config)}"
+    return config

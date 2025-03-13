@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 from glob import glob
 from datetime import datetime
@@ -69,7 +70,7 @@ class Trainer:
         self.model.accelerator = self.accelerator
 
         # TODO: use config to define this
-        if hasattr(self.model, "all_category_names"):
+        if hasattr(self.model, "all_category_names") and self.model.all_category_names is not None:
             self.model.all_category_names = self.train_loader.dataset.all_category_names
 
         if self.cfg.remake_dataloader_iter > 0:
@@ -119,6 +120,7 @@ class Trainer:
         torch.save(state_dict, checkpoint_path)
         if self.keep_num_checkpoint > 0:
             misc.clean_checkpoint(self.checkpoint_dir, keep_num=self.keep_num_checkpoint)
+        self.checkpoint_path = checkpoint_path
 
     def save_clean_checkpoint(self, path):
         """Save model state only to specified path."""
@@ -127,6 +129,7 @@ class Trainer:
     def test(self):
         """Perform testing."""
         assert self.test_loader is not None, "test_data_dir must be specified for testing"
+        self.test_loader = self.accelerator.prepare_data_loader(self.test_loader)
         self.model.to(self.accelerator.device)
         self.model.set_eval()
         self.load_optim = False
@@ -138,7 +141,7 @@ class Trainer:
 
         with torch.no_grad():
             for iteration, batch in tqdm(enumerate(self.test_loader), total=len(self.test_loader)):
-                batch = validate_all_to_device(batch)
+                batch = validate_all_to_device(batch, device=self.accelerator.device)
                 m = self.model.forward(batch, epoch=epoch, total_iter=self.total_iter, save_results=True, save_dir=self.test_result_dir, is_training=False)
                 print(f"T{self.total_iter:06}")
 
@@ -158,8 +161,10 @@ class Trainer:
         self.model.set_train()
 
         # resume from checkpoint
-        if self.accelerator.is_main_process and self.resume:
+        if self.resume:
             start_epoch, self.total_iter = self.load_checkpoint()
+
+        self.model.set_train_post_load()
 
         # setup distributed training
         self.train_loader = self.accelerator.prepare_data_loader(self.train_loader)
@@ -172,6 +177,7 @@ class Trainer:
                 setattr(self.model, name, self.accelerator.prepare_optimizer(value))
             if isinstance(value, torch.optim.lr_scheduler._LRScheduler):
                 setattr(self.model, name, self.accelerator.prepare_scheduler(value))
+        self.model.to(self.accelerator.device)
 
         # initialize logger
         if self.accelerator.is_main_process and self.use_logger:
@@ -180,10 +186,13 @@ class Trainer:
                 self.logger = SummaryWriter(osp.join(self.checkpoint_dir, 'tensorboard_logs', datetime.now().strftime("%Y%m%d-%H%M%S")), flush_secs=10)
             elif self.logger_type == "wandb":
                 from .utils.wandb_writer import WandbWriter
-                self.logger = WandbWriter(project=self.model.name, config=self.cfg)
-                self.logger.watch(
-                    [self.model.netBase, self.model.netInstance], log_freq=self.log_loss_freq
-                )
+                if self.cfg.dataset.local_dir:
+                    try:
+                        os.makedirs(self.cfg.dataset.local_dir, exist_ok=True)
+                    except Exception:
+                        self.cfg.dataset.local_dir = self.cfg.dataset.local_dir.replace("/scr-ssd/", "/scr/")
+                        os.makedirs(self.cfg.dataset.local_dir, exist_ok=True)
+                self.logger = WandbWriter(project=self.model.name, config=self.cfg, local_dir=self.cfg.dataset.local_dir)
             else:
                 raise NotImplementedError(f"Unsupported loger: {self.logger}")
         else:
@@ -204,7 +213,7 @@ class Trainer:
             else:
                 raise NotImplementedError(f"Unsupported mixed precision: {self.mixed_precision}")
             # torch.cpu.amp.GradScaler() or torch.GradScaler() need latest version of pytorch
-            self.model.scaler = torch.cuda.amp.GradScaler() if "cuda" in self.accelerator.device else None
+            self.model.scaler = torch.cuda.amp.GradScaler() if "cuda" in str(self.accelerator.device) else None
         else:
             self.model.mixed_precision = None
 
@@ -232,7 +241,7 @@ class Trainer:
                         self.model.all_category_names = self.train_loader.dataset.all_category_names
                         self.remake_dataloader = True
 
-            batch = validate_all_to_device(batch)
+            batch = validate_all_to_device(batch, device=self.accelerator.device)
             m = self.model.forward(batch, epoch=epoch, total_iter=self.total_iter, is_training=True)
             self.model.backward()
 
@@ -283,7 +292,7 @@ class Trainer:
                             batch = self.log_batch
                         else:
                             batch = next(self.val_data_iterator)
-                        batch = validate_all_to_device(batch)
+                        batch = validate_all_to_device(batch, device=self.accelerator.device)
                         self.model.set_eval()
                         with torch.no_grad():
                             m = self.model.forward(batch, epoch=epoch, logger=self.logger, total_iter=self.total_iter, logger_prefix='val_', is_training=False)
@@ -310,6 +319,8 @@ def indefinite_generator(loader):
 
 
 def validate_tensor_to_device(x, device=None):
+    if isinstance(x, (list, tuple)):
+        return x
     if torch.any(torch.isnan(x)):
         return None
     elif device is None:

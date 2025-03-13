@@ -113,6 +113,8 @@ cfg_predictor_instance:
     max_arti_angle: 60
     constrain_legs: true
     output_multiplier: 0.1
+    enable_refine: false
+    use_fauna_constraints: false
 
   enable_lighting: true
   cfg_light:

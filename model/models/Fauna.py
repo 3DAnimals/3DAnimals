@@ -280,7 +280,7 @@ class FaunaModel(AnimalModel):
             'd_gt': d_gt if d_gt is not None else None,
         }, grad_loss
     
-    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None, class_vector=None):
+    def compute_regularizers(self, arti_params=None, deformation=None, pose_raw=None, posed_bones=None, class_vector=None, prior_shape=None, **kwargs):
         losses = {}
         aux = {}
         losses.update(self.get_predictor("netBase").netShape.get_sdf_reg_loss(feats=class_vector))
@@ -507,8 +507,8 @@ class FaunaModel(AnimalModel):
             self.save_results(log)
         return metrics
 
-    def log_visuals(self, log, logger):
-        super().log_visuals(log, logger, sdf_feats=log.class_vector, text=self.all_category_names[int(log.tmp_label.reshape(-1)[0].item())])
+    def log_visuals(self, log, logger, **kwargs):
+        super().log_visuals(log, logger, sdf_feats=log.class_vector)
 
         weights_for_emb = log.bank_embedding[2]['weights'] # [B, k]
         for i, weight_for_emb in enumerate(weights_for_emb.unbind(-1)):

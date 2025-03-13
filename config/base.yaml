@@ -10,7 +10,7 @@ test_data_dir: null
 checkpoint_dir: results
 save_checkpoint_freq: 5000
 keep_num_checkpoint: 2  # -1 for keeping all checkpoints
-archive_code: true
+archive_code: false
 resume: true
 checkpoint_name: null
 test_result_dir: null

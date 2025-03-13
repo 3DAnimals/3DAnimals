@@ -16,7 +16,7 @@ dataset:
   batch_size: 20
   random_xflip_train: true
   num_frames: 10
-  train_data_dir: data/ponymation/horse_stage2
+  train_data_dir: data/ponymation/horse_stage2/train
   val_data_dir: data/ponymation/horse/test
   random_shuffle_samples_train: true
   load_dino_feature: true
@@ -55,8 +55,8 @@ seed: 0
 gpu: 0
 num_iters: 500000
 checkpoint_dir: results/ponymation/pretrained_horse
-checkpoint_name: pretrained_horse_stage1_modified.pth
+checkpoint_name: pretrained_horse_stage1.pth
 resume: true  # Start from a Ponymation stage 1 ckpt
 load_optim: false
-logger_type: tensorboard
+logger_type: wandb
 mixed_precision: false
