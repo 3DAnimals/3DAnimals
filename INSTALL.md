@@ -13,7 +13,7 @@ pip install glfw xatlas
 ### 2. Install [PyTorch](https://pytorch.org/) and [Accelerate](https://huggingface.co/docs/accelerate/en/basic_tutorials/install)
 ```shell
 conda install pytorch==1.10.0 torchvision==0.11.0 torchaudio==0.10.0 cudatoolkit=11.3 -c pytorch -c conda-forge
-conda conda install -c conda-forge accelerate==1.1.1
+conda install -c conda-forge accelerate==1.1.1
 ```
 *Note*: The code is tested with PyTorch 1.10.0 and CUDA 11.3.
 
